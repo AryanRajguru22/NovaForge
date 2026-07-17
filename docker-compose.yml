@@ -16,5 +16,32 @@ services:
       timeout: 5s
       retries: 5
 
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    env_file:
+      - ./server/.env
+    environment:
+      # Overrides .env values that only make sense on the host (localhost DB,
+      # localhost origin) with the values that make sense inside the compose
+      # network / behind the client's nginx proxy.
+      DATABASE_URL: postgresql://novaforge:novaforge@postgres:5432/novaforge
+      RP_ORIGIN: http://localhost:8080
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  client:
+    build:
+      context: ./client
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - server
+
 volumes:
   novaforge_pgdata:
