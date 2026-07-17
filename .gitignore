@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.env
+*.local
+.DS_Store
+server/prisma/*.db
+
+# Local planning docs — not part of the codebase
+PLAN.md
+NOTES.md
+/docs/local/
