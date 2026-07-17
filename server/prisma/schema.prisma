@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SENIOR_APPROVER
+  APPROVER
+  MEMBER
+}
+
+enum CredentialType {
+  PASSKEY
+  TOTP
+  RECOVERY_CODE
+}
+
+enum QuorumType {
+  N_OF_M
+  WEIGHTED
+  ROLE_BASED
+}
+
+enum ActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum VoteDecision {
+  APPROVE
+  REJECT
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  role      Role     @default(MEMBER)
+  riskTier  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  credentials       Credential[]
+  sessions          Session[]
+  requestedActions  SensitiveAction[] @relation("RequestedBy")
+  votes             ApprovalVote[]
+  auditEvents       AuditLog[]
+}
+
+model Credential {
+  id           String         @id @default(uuid())
+  userId       String
+  user         User           @relation(fields: [userId], references: [id])
+  type         CredentialType
+  publicKey    String?
+  counter      BigInt         @default(0)
+  deviceLabel  String?
+  secret       String? // TOTP secret / hashed recovery code, never the raw passkey key material
+  createdAt    DateTime       @default(now())
+  lastUsedAt   DateTime?
+
+  @@index([userId])
+}
+
+model Session {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  deviceId       String
+  trustLevel     Int      @default(100) // decays over time without connectivity/re-verification
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+  lastVerifiedAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model SensitiveAction {
+  id            String            @id @default(uuid())
+  type          String
+  payload       Json
+  status        ActionStatus      @default(PENDING)
+  requestedById String
+  requestedBy   User              @relation("RequestedBy", fields: [requestedById], references: [id])
+  createdAt     DateTime          @default(now())
+
+  approvalRequest ApprovalRequest?
+}
+
+model ApprovalPolicy {
+  id                  String     @id @default(uuid())
+  actionType          String     @unique
+  quorumType          QuorumType
+  minApprovals        Int
+  eligibleRoles       Role[]
+  fallbackPolicyId    String?
+  escalationTimeoutSec Int       @default(300)
+
+  approvalRequests ApprovalRequest[]
+}
+
+model ApprovalRequest {
+  id        String       @id @default(uuid())
+  actionId  String       @unique
+  action    SensitiveAction @relation(fields: [actionId], references: [id])
+  policyId  String
+  policy    ApprovalPolicy @relation(fields: [policyId], references: [id])
+  status    ActionStatus @default(PENDING)
+  expiresAt DateTime
+
+  votes ApprovalVote[]
+}
+
+model ApprovalVote {
+  id         String          @id @default(uuid())
+  requestId  String
+  request    ApprovalRequest @relation(fields: [requestId], references: [id])
+  approverId String
+  approver   User            @relation(fields: [approverId], references: [id])
+  decision   VoteDecision
+  signature  String // raw WebAuthn assertion signature, ties the vote to the approver's device key
+  deviceId   String
+  timestamp  DateTime        @default(now())
+
+  @@index([requestId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  event      String
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  metadata   Json?
+  timestamp  DateTime @default(now())
+  prevHash   String?
+  hash       String
+
+  @@index([entityType, entityId])
+}
