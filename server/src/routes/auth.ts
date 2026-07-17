@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { Router, type Response } from "express";
 import { z } from "zod";
 import { authenticator } from "otplib";
@@ -13,8 +14,12 @@ import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../lib/jwt.js";
+import { hashSecret, verifySecret } from "../lib/hash.js";
 import { appendAuditLog } from "../lib/audit.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { rateLimit } from "../middleware/rateLimit.js";
+
+const loginAttemptLimit = rateLimit({ max: 5, windowMs: 5 * 60 * 1000, keyField: "email" });
 
 export const authRouter = Router();
 
@@ -196,7 +201,7 @@ const loginVerifySchema = z.object({
   response: z.custom<AuthenticationResponseJSON>((v) => typeof v === "object" && v !== null),
 });
 
-authRouter.post("/login/verify", async (req, res) => {
+authRouter.post("/login/verify", loginAttemptLimit, async (req, res) => {
   const parsed = loginVerifySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
@@ -308,14 +313,20 @@ authRouter.post("/totp/verify", requireAuth, async (req, res) => {
     return;
   }
 
-  await prisma.credential.create({
-    data: {
-      userId: req.user!.id,
-      type: "TOTP",
-      secret,
-      deviceLabel: "Authenticator app",
-    },
-  });
+  // Replace, don't accumulate: re-enrolling should leave exactly one active
+  // TOTP credential, otherwise login can end up checking against a stale
+  // secret that no longer matches what's in the user's authenticator app.
+  await prisma.$transaction([
+    prisma.credential.deleteMany({ where: { userId: req.user!.id, type: "TOTP" } }),
+    prisma.credential.create({
+      data: {
+        userId: req.user!.id,
+        type: "TOTP",
+        secret,
+        deviceLabel: "Authenticator app",
+      },
+    }),
+  ]);
 
   await appendAuditLog({
     entityType: "User",
@@ -332,7 +343,7 @@ const totpLoginSchema = z.object({
   token: z.string().trim().length(6),
 });
 
-authRouter.post("/login/totp", async (req, res) => {
+authRouter.post("/login/totp", loginAttemptLimit, async (req, res) => {
   const parsed = totpLoginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
@@ -365,6 +376,87 @@ authRouter.post("/login/totp", async (req, res) => {
     event: "LOGIN_SUCCESS_TOTP",
     actorId: user.id,
     metadata: { deviceId: totpCredential.id },
+  });
+
+  res.json({
+    verified: true,
+    user: { id: user.id, email: user.email, name: user.name, role: user.role },
+  });
+});
+
+// --- Recovery codes ---
+// Single-use codes for when neither a passkey device nor an authenticator app
+// is available. Each code is its own Credential row (hashed, never stored
+// plaintext) so redemption is just "delete the matching row" — no separate
+// used/unused flag to keep in sync.
+
+const RECOVERY_CODE_COUNT = 10;
+
+function generateRecoveryCode(): string {
+  // XXXX-XXXX numeric, easy to read back after a device loss.
+  const part = () => randomInt(0, 1_000_000).toString().padStart(4, "0").slice(0, 4);
+  return `${part()}-${part()}`;
+}
+
+authRouter.post("/recovery-codes/generate", requireAuth, async (req, res) => {
+  const codes = Array.from({ length: RECOVERY_CODE_COUNT }, generateRecoveryCode);
+
+  await prisma.$transaction([
+    prisma.credential.deleteMany({ where: { userId: req.user!.id, type: "RECOVERY_CODE" } }),
+    prisma.credential.createMany({
+      data: codes.map((code) => ({
+        userId: req.user!.id,
+        type: "RECOVERY_CODE" as const,
+        secret: hashSecret(code),
+        deviceLabel: "Recovery code",
+      })),
+    }),
+  ]);
+
+  await appendAuditLog({
+    entityType: "User",
+    entityId: req.user!.id,
+    event: "RECOVERY_CODES_GENERATED",
+    actorId: req.user!.id,
+    metadata: { count: codes.length },
+  });
+
+  // Codes are only ever returned in plaintext here — the DB only ever holds hashes.
+  res.json({ codes });
+});
+
+const recoveryLoginSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  code: z.string().trim().min(1),
+});
+
+authRouter.post("/login/recovery-code", loginAttemptLimit, async (req, res) => {
+  const parsed = recoveryLoginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+  const { email, code } = parsed.data;
+
+  const user = await prisma.user.findUnique({ where: { email }, include: { credentials: true } });
+  const match = user?.credentials.find(
+    (c) => c.type === "RECOVERY_CODE" && c.secret && verifySecret(code, c.secret),
+  );
+  if (!user || !match) {
+    res.status(400).json({ error: "Invalid or already-used recovery code" });
+    return;
+  }
+
+  // Single-use: delete immediately on successful redemption.
+  await prisma.credential.delete({ where: { id: match.id } });
+
+  const session = await issueSession(user.id, match.id, res);
+
+  await appendAuditLog({
+    entityType: "Session",
+    entityId: session.id,
+    event: "LOGIN_SUCCESS_RECOVERY_CODE",
+    actorId: user.id,
   });
 
   res.json({
@@ -415,12 +507,25 @@ authRouter.post("/session/refresh", async (req, res) => {
 });
 
 authRouter.get("/me", requireAuth, async (req, res) => {
-  const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    include: { credentials: true },
+  });
   if (!user) {
     res.status(404).json({ error: "User not found" });
     return;
   }
-  res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
+  res.json({
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    factors: {
+      passkey: user.credentials.some((c) => c.type === "PASSKEY"),
+      totp: user.credentials.some((c) => c.type === "TOTP"),
+      recoveryCodes: user.credentials.filter((c) => c.type === "RECOVERY_CODE").length,
+    },
+  });
 });
 
 authRouter.post("/logout", requireAuth, async (req, res) => {
@@ -428,4 +533,48 @@ authRouter.post("/logout", requireAuth, async (req, res) => {
   res.clearCookie(ACCESS_COOKIE);
   res.clearCookie(REFRESH_COOKIE);
   res.json({ loggedOut: true });
+});
+
+// --- Device / session management ---
+
+authRouter.get("/sessions", requireAuth, async (req, res) => {
+  const sessions = await prisma.session.findMany({
+    where: { userId: req.user!.id },
+    orderBy: { lastVerifiedAt: "desc" },
+  });
+  res.json(
+    sessions.map((s) => ({
+      id: s.id,
+      deviceId: s.deviceId,
+      trustLevel: s.trustLevel,
+      createdAt: s.createdAt,
+      expiresAt: s.expiresAt,
+      lastVerifiedAt: s.lastVerifiedAt,
+      current: s.id === req.user!.sessionId,
+    })),
+  );
+});
+
+authRouter.delete("/sessions/:id", requireAuth, async (req, res) => {
+  const session = await prisma.session.findUnique({ where: { id: req.params.id } });
+  if (!session || session.userId !== req.user!.id) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  await prisma.session.delete({ where: { id: session.id } });
+
+  await appendAuditLog({
+    entityType: "Session",
+    entityId: session.id,
+    event: "SESSION_REVOKED",
+    actorId: req.user!.id,
+  });
+
+  if (session.id === req.user!.sessionId) {
+    res.clearCookie(ACCESS_COOKIE);
+    res.clearCookie(REFRESH_COOKIE);
+  }
+
+  res.json({ revoked: true });
 });

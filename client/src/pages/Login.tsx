@@ -7,7 +7,7 @@ import type {
 } from "@simplewebauthn/types";
 import { apiPost, ApiError } from "../lib/api.js";
 
-type Mode = "login" | "register" | "totp";
+type Mode = "login" | "register" | "totp" | "recovery";
 
 interface MeResponse {
   id: string;
@@ -22,6 +22,7 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -94,22 +95,44 @@ export default function Login() {
     }
   }
 
+  async function handleRecoveryLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      setStatus("Verifying recovery code…");
+      await apiPost<{ user: MeResponse }>("/auth/login/recovery-code", {
+        email,
+        code: recoveryCode,
+      });
+      navigate("/approvals");
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+      setStatus(null);
+    }
+  }
+
   const titles: Record<Mode, string> = {
     login: "Sign in with your passkey",
     register: "Register a new passkey",
     totp: "Sign in with your authenticator app",
+    recovery: "Sign in with a recovery code",
   };
 
   const submitLabels: Record<Mode, string> = {
     login: "Sign in",
     register: "Register passkey",
     totp: "Verify code",
+    recovery: "Use recovery code",
   };
 
   const handlers: Record<Mode, (e: React.FormEvent) => Promise<void>> = {
     login: handleLogin,
     register: handleRegister,
     totp: handleTotpLogin,
+    recovery: handleRecoveryLogin,
   };
 
   return (
@@ -169,6 +192,23 @@ export default function Login() {
             </div>
           )}
 
+          {mode === "recovery" && (
+            <div>
+              <label htmlFor="recoveryCode" className="mb-1 block text-sm text-slate-300">
+                Recovery code
+              </label>
+              <input
+                id="recoveryCode"
+                type="text"
+                placeholder="XXXX-XXXX"
+                required
+                value={recoveryCode}
+                onChange={(e) => setRecoveryCode(e.target.value)}
+                className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              />
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={busy}
@@ -216,6 +256,18 @@ export default function Login() {
               className="text-slate-400 underline hover:text-slate-200"
             >
               Don't have your passkey device? Use an authenticator code
+            </button>
+          )}
+          {mode !== "recovery" && (
+            <button
+              type="button"
+              onClick={() => {
+                setMode("recovery");
+                setError(null);
+              }}
+              className="text-slate-400 underline hover:text-slate-200"
+            >
+              Lost everything? Use a recovery code
             </button>
           )}
         </div>

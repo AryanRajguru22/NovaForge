@@ -34,3 +34,15 @@ export async function apiGet<T>(path: string): Promise<T> {
   }
   return data as T;
 }
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status);
+  }
+  return data as T;
+}
