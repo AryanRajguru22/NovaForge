@@ -1,4 +1,5 @@
 import { Route, Routes, Link } from "react-router-dom";
+import Login from "./pages/Login.js";
 
 function Home() {
   return (
@@ -17,12 +18,7 @@ function Home() {
   );
 }
 
-// Person C: replace these placeholders with the real passkey login flow and
-// the approvals dashboard as they're built.
-function Login() {
-  return <div className="p-8 text-slate-100">Login screen — passkey flow goes here.</div>;
-}
-
+// Approval dashboard is built alongside the approval-policy engine.
 function Approvals() {
   return <div className="p-8 text-slate-100">Approvals dashboard — pending requests go here.</div>;
 }

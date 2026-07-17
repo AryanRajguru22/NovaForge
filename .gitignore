@@ -10,4 +10,5 @@ server/prisma/*.db
 # Local planning docs — not part of the codebase
 PLAN.md
 NOTES.md
+CLAUDE.md
 /docs/local/
