@@ -14,6 +14,7 @@
   "dependencies": {
     "@prisma/client": "^5.20.0",
     "@simplewebauthn/server": "^10.0.1",
+    "@simplewebauthn/types": "^10.0.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

@@ -58,6 +58,7 @@ model Credential {
   userId       String
   user         User           @relation(fields: [userId], references: [id])
   type         CredentialType
+  credentialId String?        @unique // base64url WebAuthn credential ID (passkeys only)
   publicKey    String?
   counter      BigInt         @default(0)
   deviceLabel  String?

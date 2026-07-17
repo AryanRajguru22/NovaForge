@@ -4,6 +4,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { Server as SocketIOServer } from "socket.io";
 import { env } from "./lib/env.js";
+import { authRouter } from "./routes/auth.js";
 
 const app = express();
 app.use(cors({ origin: env.rpOrigin, credentials: true }));
@@ -14,8 +15,9 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Route modules mount here as they're built, e.g.:
-// app.use("/auth", authRouter);
+app.use("/auth", authRouter);
+
+// Further route modules mount here as they're built, e.g.:
 // app.use("/actions", actionsRouter);
 // app.use("/approvals", approvalsRouter);
 // app.use("/policies", policiesRouter);
