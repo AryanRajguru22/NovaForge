@@ -1,5 +1,6 @@
 import { Route, Routes, Link } from "react-router-dom";
 import Login from "./pages/Login.js";
+import Settings from "./pages/Settings.js";
 
 function Home() {
   return (
@@ -13,6 +14,9 @@ function Home() {
         <Link to="/approvals" className="hover:text-white">
           Approvals
         </Link>
+        <Link to="/settings" className="hover:text-white">
+          Security settings
+        </Link>
       </nav>
     </div>
   );
@@ -20,7 +24,14 @@ function Home() {
 
 // Approval dashboard is built alongside the approval-policy engine.
 function Approvals() {
-  return <div className="p-8 text-slate-100">Approvals dashboard — pending requests go here.</div>;
+  return (
+    <div className="p-8 text-slate-100">
+      <p>Approvals dashboard — pending requests go here.</p>
+      <Link to="/settings" className="text-sm text-slate-400 underline hover:text-slate-200">
+        Security settings
+      </Link>
+    </div>
+  );
 }
 
 export default function App() {
@@ -29,6 +40,7 @@ export default function App() {
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
       <Route path="/approvals" element={<Approvals />} />
+      <Route path="/settings" element={<Settings />} />
     </Routes>
   );
 }

@@ -1,5 +1,6 @@
 import { Router, type Response } from "express";
 import { z } from "zod";
+import { authenticator } from "otplib";
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -259,6 +260,111 @@ authRouter.post("/login/verify", async (req, res) => {
     event: "LOGIN_SUCCESS",
     actorId: user.id,
     metadata: { deviceId: credential.id },
+  });
+
+  res.json({
+    verified: true,
+    user: { id: user.id, email: user.email, name: user.name, role: user.role },
+  });
+});
+
+// --- TOTP fallback ---
+// Enrollment requires an existing session (you register TOTP as a backup while
+// already signed in with a passkey); the secret is held in the challenge store
+// until /totp/verify confirms the user actually captured it, so an abandoned
+// setup never leaves an unusable credential row behind.
+
+authRouter.post("/totp/setup", requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const secret = authenticator.generateSecret();
+  const otpauthUrl = authenticator.keyuri(user.email, env.rpName, secret);
+
+  setChallenge(`totp-setup:${user.id}`, secret);
+  res.json({ secret, otpauthUrl });
+});
+
+const totpVerifySchema = z.object({ token: z.string().trim().length(6) });
+
+authRouter.post("/totp/verify", requireAuth, async (req, res) => {
+  const parsed = totpVerifySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+
+  const secret = takeChallenge(`totp-setup:${req.user!.id}`);
+  if (!secret) {
+    res.status(400).json({ error: "TOTP setup expired, please restart" });
+    return;
+  }
+
+  if (!authenticator.check(parsed.data.token, secret)) {
+    res.status(400).json({ error: "Invalid code" });
+    return;
+  }
+
+  await prisma.credential.create({
+    data: {
+      userId: req.user!.id,
+      type: "TOTP",
+      secret,
+      deviceLabel: "Authenticator app",
+    },
+  });
+
+  await appendAuditLog({
+    entityType: "User",
+    entityId: req.user!.id,
+    event: "TOTP_ENROLLED",
+    actorId: req.user!.id,
+  });
+
+  res.json({ verified: true });
+});
+
+const totpLoginSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  token: z.string().trim().length(6),
+});
+
+authRouter.post("/login/totp", async (req, res) => {
+  const parsed = totpLoginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+  const { email, token } = parsed.data;
+
+  const user = await prisma.user.findUnique({ where: { email }, include: { credentials: true } });
+  const totpCredential = user?.credentials.find((c) => c.type === "TOTP" && c.secret);
+  if (!user || !totpCredential || !totpCredential.secret) {
+    res.status(404).json({ error: "No authenticator app registered for this account" });
+    return;
+  }
+
+  if (!authenticator.check(token, totpCredential.secret)) {
+    res.status(400).json({ error: "Invalid code" });
+    return;
+  }
+
+  await prisma.credential.update({
+    where: { id: totpCredential.id },
+    data: { lastUsedAt: new Date() },
+  });
+
+  const session = await issueSession(user.id, totpCredential.id, res);
+
+  await appendAuditLog({
+    entityType: "Session",
+    entityId: session.id,
+    event: "LOGIN_SUCCESS_TOTP",
+    actorId: user.id,
+    metadata: { deviceId: totpCredential.id },
   });
 
   res.json({
