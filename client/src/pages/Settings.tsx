@@ -152,53 +152,49 @@ export default function Settings() {
   }
 
   if (!user) {
-    return <div className="p-8 text-slate-100">Loading…</div>;
+    return <div className="font-mono p-8 text-sm text-ash-400">Loading…</div>;
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 p-8 text-slate-100">
+    <div className="min-h-screen px-6 py-8">
       <div className="mx-auto max-w-md space-y-6">
-        <nav className="flex items-center gap-5 border-b border-slate-800 pb-4 text-sm text-slate-400">
-          <Link to="/approvals" className="hover:text-slate-200 transition-colors">
+        <nav className="ledger-rule flex items-center gap-5 pb-4 text-sm text-ash-400">
+          <Link to="/approvals" className="link-quiet">
             Approvals
           </Link>
-          <Link to="/policies" className="hover:text-slate-200 transition-colors">
+          <Link to="/policies" className="link-quiet">
             Policies
           </Link>
-          <Link to="/settings" className="font-semibold text-slate-100 hover:text-white">
+          <Link to="/settings" className="font-semibold text-parchment-100">
             Security Settings
           </Link>
         </nav>
         <div>
-          <h1 className="text-xl font-semibold">Security settings</h1>
-          <p className="text-sm text-slate-400">{user.email}</p>
+          <p className="eyebrow">Account</p>
+          <h1 className="font-display mt-1 text-2xl text-parchment-100">Security settings</h1>
+          <p className="font-mono text-xs text-ash-400">{user.email}</p>
         </div>
 
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+        <div className="ledger-card space-y-4 p-6">
           <div>
-            <h2 className="font-medium">Authenticator app (TOTP fallback)</h2>
-            <p className="text-sm text-slate-400">
+            <h2 className="font-display text-lg text-parchment-100">Authenticator app (TOTP fallback)</h2>
+            <p className="font-serif text-sm text-ash-400">
               Use as a backup sign-in method when your passkey device isn't available.
             </p>
           </div>
 
           {user.factors.totp && !pendingSetup && (
-            <p className="text-sm text-emerald-400">Authenticator app is enabled.</p>
+            <p className="text-sm text-temper-400">Authenticator app is enabled.</p>
           )}
 
           {!pendingSetup && (
-            <button
-              type="button"
-              onClick={handleStartSetup}
-              disabled={busy}
-              className="rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
-            >
+            <button type="button" onClick={handleStartSetup} disabled={busy} className="btn-primary">
               {user.factors.totp ? "Replace with a new device" : "Set up authenticator app"}
             </button>
           )}
 
           {user.factors.totp && !pendingSetup && (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-ash-400">
               Setting up a new device replaces the current one — the old QR code/secret stops
               working immediately.
             </p>
@@ -207,14 +203,14 @@ export default function Settings() {
           {pendingSetup && (
             <div className="space-y-3">
               {qrDataUrl && (
-                <img src={qrDataUrl} alt="Scan with your authenticator app" className="rounded bg-white p-2" />
+                <img src={qrDataUrl} alt="Scan with your authenticator app" className="rounded bg-parchment-100 p-2" />
               )}
-              <p className="break-all text-xs text-slate-500">
+              <p className="font-mono break-all text-xs text-ash-400">
                 Can't scan? Enter this key manually: {pendingSetup.secret}
               </p>
               <form onSubmit={handleVerify} className="space-y-3">
                 <div>
-                  <label htmlFor="code" className="mb-1 block text-sm text-slate-300">
+                  <label htmlFor="code" className="mb-1 block text-sm text-ash-300">
                     Enter the 6-digit code
                   </label>
                   <input
@@ -225,14 +221,10 @@ export default function Settings() {
                     required
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
-                    className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    className="input font-mono tracking-[0.3em]"
                   />
                 </div>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="w-full rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
-                >
+                <button type="submit" disabled={busy} className="btn-primary w-full">
                   Confirm and enable
                 </button>
               </form>
@@ -240,30 +232,25 @@ export default function Settings() {
           )}
         </div>
 
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+        <div className="ledger-card space-y-4 p-6">
           <div>
-            <h2 className="font-medium">Recovery codes</h2>
-            <p className="text-sm text-slate-400">
+            <h2 className="font-display text-lg text-parchment-100">Recovery codes</h2>
+            <p className="font-serif text-sm text-ash-400">
               One-time codes for when neither your passkey nor authenticator app is available.
               Generating new codes invalidates any previous ones.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={handleGenerateRecoveryCodes}
-            disabled={busy}
-            className="rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
-          >
+          <button type="button" onClick={handleGenerateRecoveryCodes} disabled={busy} className="btn-primary">
             {recoveryCodes ? "Generate new codes" : "Generate recovery codes"}
           </button>
 
           {recoveryCodes && (
             <div className="space-y-2">
-              <p className="text-xs text-amber-400">
+              <p className="text-xs text-ember-400">
                 Save these now — they won't be shown again. Each code works once.
               </p>
-              <div className="grid grid-cols-2 gap-2 rounded border border-slate-700 bg-slate-950 p-3 font-mono text-sm">
+              <div className="grid grid-cols-2 gap-2 rounded border border-iron-600 bg-iron-950 p-3 font-mono text-sm text-parchment-100">
                 {recoveryCodes.map((c) => (
                   <span key={c}>{c}</span>
                 ))}
@@ -272,17 +259,17 @@ export default function Settings() {
           )}
         </div>
 
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+        <div className="ledger-card space-y-4 p-6">
           <div>
-            <h2 className="font-medium">Login methods</h2>
-            <p className="text-sm text-slate-400">
+            <h2 className="font-display text-lg text-parchment-100">Login methods</h2>
+            <p className="font-serif text-sm text-ash-400">
               Keep a backup method enrolled, but turn off its ability to sign in whenever you want.
             </p>
           </div>
 
-          <div className="rounded border border-slate-800 bg-slate-950 p-3 text-sm">
-            <p className="font-medium">Passkey</p>
-            <p className="mt-1 text-slate-400">Always enabled — this is your required primary sign-in method.</p>
+          <div className="rounded border border-iron-700 bg-iron-950 p-3 text-sm">
+            <p className="font-medium text-parchment-100">Passkey</p>
+            <p className="mt-1 text-ash-400">Always enabled — this is your required primary sign-in method.</p>
           </div>
 
           <LoginMethodToggle
@@ -304,19 +291,19 @@ export default function Settings() {
           />
         </div>
 
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+        <div className="ledger-card space-y-4 p-6">
           <div>
-            <h2 className="font-medium">Active sessions</h2>
-            <p className="text-sm text-slate-400">
+            <h2 className="font-display text-lg text-parchment-100">Active sessions</h2>
+            <p className="font-serif text-sm text-ash-400">
               Devices currently signed in. Trust decays if a session goes too long without
               reconnecting to the server (e.g. poor connectivity).
             </p>
           </div>
 
-          {!sessions && <p className="text-sm text-slate-500">Loading sessions…</p>}
+          {!sessions && <p className="text-sm text-ash-400">Loading sessions…</p>}
 
           {sessions && sessions.length === 0 && (
-            <p className="text-sm text-slate-500">No active sessions.</p>
+            <p className="text-sm text-ash-400">No active sessions.</p>
           )}
 
           {sessions && sessions.length > 0 && (
@@ -324,21 +311,21 @@ export default function Settings() {
               {sessions.map((s) => (
                 <li
                   key={s.id}
-                  className="flex items-center justify-between rounded border border-slate-800 bg-slate-950 p-3 text-sm"
+                  className="flex items-center justify-between rounded border border-iron-700 bg-iron-950 p-3 text-sm"
                 >
                   <div>
-                    <p>
+                    <p className="text-parchment-100">
                       {s.current ? "This device" : "Other device"}{" "}
-                      <span className="text-slate-500">· trust {s.trustLevel}%</span>
+                      <span className="font-mono text-xs text-ash-400">· trust {s.trustLevel}%</span>
                     </p>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-ash-400">
                       Last verified {new Date(s.lastVerifiedAt).toLocaleString()}
                     </p>
                   </div>
                   <button
                     type="button"
                     onClick={() => handleRevokeSession(s.id)}
-                    className="text-xs text-red-400 underline hover:text-red-300"
+                    className="text-xs text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500"
                   >
                     Revoke
                   </button>
@@ -348,8 +335,8 @@ export default function Settings() {
           )}
         </div>
 
-        {status && <p className="text-sm text-slate-400">{status}</p>}
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {status && <p className="font-mono text-xs text-ash-400">{status}</p>}
+        {error && <p className="font-mono text-xs text-rust-400">{error}</p>}
       </div>
     </div>
   );
@@ -372,10 +359,10 @@ function LoginMethodToggle({
 }) {
   const disabled = !available || busy;
   return (
-    <div className={`flex items-center justify-between gap-4 rounded border border-slate-800 bg-slate-950 p-3 ${!available ? "opacity-50" : ""}`}>
+    <div className={`flex items-center justify-between gap-4 rounded border border-iron-700 bg-iron-950 p-3 ${!available ? "opacity-50" : ""}`}>
       <div>
-        <p className="font-medium text-sm">{label}</p>
-        <p className="mt-1 text-xs text-slate-400">{available ? description : "Set up this method above before it can be used for sign-in."}</p>
+        <p className="text-sm font-medium text-parchment-100">{label}</p>
+        <p className="mt-1 text-xs text-ash-400">{available ? description : "Set up this method above before it can be used for sign-in."}</p>
       </div>
       <button
         type="button"
@@ -384,7 +371,7 @@ function LoginMethodToggle({
         aria-label={`${label} login ${enabled ? "enabled" : "disabled"}`}
         disabled={disabled}
         onClick={() => onChange(!enabled)}
-        className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed ${enabled ? "bg-emerald-500 text-slate-950" : "bg-slate-700 text-slate-200"}`}
+        className={`shrink-0 rounded-full px-3 py-1.5 font-mono text-xs font-medium transition-colors disabled:cursor-not-allowed ${enabled ? "bg-temper-500 text-iron-950" : "bg-iron-700 text-ash-300"}`}
       >
         {enabled ? "On" : "Off"}
       </button>

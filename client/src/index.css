@@ -2,8 +2,77 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply bg-iron-950 text-parchment-100;
+    font-family: "Source Serif 4", serif;
+    background-image:
+      radial-gradient(ellipse 900px 500px at 15% -10%, rgba(255, 106, 52, 0.07), transparent),
+      radial-gradient(ellipse 700px 500px at 100% 10%, rgba(95, 179, 172, 0.05), transparent);
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: "Big Shoulders Display", sans-serif;
+    letter-spacing: 0.01em;
+  }
+}
+
 @layer components {
   .input {
-    @apply w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-500;
+    @apply w-full rounded-sm border border-iron-600 bg-iron-900 px-3 py-2 text-sm text-parchment-100 outline-none transition-colors placeholder:text-ash-400/60 focus:border-ember-500;
+    font-family: "Source Serif 4", serif;
+  }
+
+  /* Eyebrow label: small-caps stamped header, used above section titles */
+  .eyebrow {
+    @apply font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-ash-400;
+  }
+
+  /* Ledger card: the base panel used throughout, with a struck top-left corner mark */
+  .ledger-card {
+    @apply relative rounded border border-iron-700 bg-iron-900/60;
+    background-image: linear-gradient(135deg, rgba(255, 106, 52, 0.05) 0%, transparent 40%);
+  }
+
+  /* Hairline ledger rule — a deliberate divider, not a default border */
+  .ledger-rule {
+    @apply border-t border-dashed border-iron-700;
+  }
+
+  .btn-primary {
+    @apply rounded-sm bg-ember-500 px-4 py-2 text-sm font-semibold text-iron-950 transition-colors hover:bg-ember-400 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply rounded-sm border border-iron-600 bg-iron-900 px-4 py-2 text-sm text-parchment-100 transition-colors hover:border-ash-400 hover:bg-iron-800 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .link-quiet {
+    @apply text-ash-400 underline decoration-iron-600 underline-offset-4 transition-colors hover:text-parchment-100 hover:decoration-ash-400;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* The Seal — struck when a request reaches quorum. A brief, single, orchestrated
+   moment rather than ambient motion: the ring closes and the mark drops in place. */
+@keyframes seal-strike {
+  0% { transform: scale(1.5); opacity: 0; }
+  60% { transform: scale(0.92); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.seal-strike {
+  animation: seal-strike 0.42s cubic-bezier(0.2, 0.8, 0.3, 1.1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seal-strike {
+    animation: none;
   }
 }

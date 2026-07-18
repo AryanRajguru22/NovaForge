@@ -136,16 +136,16 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
-      <div className="w-full max-w-sm space-y-6 rounded-lg border border-slate-800 bg-slate-900 p-8">
+    <div className="flex min-h-screen items-center justify-center px-6">
+      <div className="ledger-card w-full max-w-sm space-y-6 p-8">
         <div>
-          <h1 className="text-xl font-semibold">NovaForge</h1>
-          <p className="text-sm text-slate-400">{titles[mode]}</p>
+          <p className="eyebrow">NovaForge</p>
+          <h1 className="font-display mt-1 text-2xl text-parchment-100">{titles[mode]}</h1>
         </div>
 
         <form onSubmit={handlers[mode]} className="space-y-4">
           <div>
-            <label htmlFor="email" className="mb-1 block text-sm text-slate-300">
+            <label htmlFor="email" className="mb-1 block text-sm text-ash-300">
               Email
             </label>
             <input
@@ -154,13 +154,13 @@ export default function Login() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              className="input"
             />
           </div>
 
           {mode === "register" && (
             <div>
-              <label htmlFor="name" className="mb-1 block text-sm text-slate-300">
+              <label htmlFor="name" className="mb-1 block text-sm text-ash-300">
                 Name
               </label>
               <input
@@ -169,14 +169,14 @@ export default function Login() {
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="input"
               />
             </div>
           )}
 
           {mode === "totp" && (
             <div>
-              <label htmlFor="code" className="mb-1 block text-sm text-slate-300">
+              <label htmlFor="code" className="mb-1 block text-sm text-ash-300">
                 6-digit code
               </label>
               <input
@@ -187,14 +187,14 @@ export default function Login() {
                 required
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="input font-mono tracking-[0.3em]"
               />
             </div>
           )}
 
           {mode === "recovery" && (
             <div>
-              <label htmlFor="recoveryCode" className="mb-1 block text-sm text-slate-300">
+              <label htmlFor="recoveryCode" className="mb-1 block text-sm text-ash-300">
                 Recovery code
               </label>
               <input
@@ -204,24 +204,20 @@ export default function Login() {
                 required
                 value={recoveryCode}
                 onChange={(e) => setRecoveryCode(e.target.value)}
-                className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="input font-mono"
               />
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
-          >
+          <button type="submit" disabled={busy} className="btn-primary w-full">
             {submitLabels[mode]}
           </button>
         </form>
 
-        {status && <p className="text-sm text-slate-400">{status}</p>}
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {status && <p className="font-mono text-xs text-ash-400">{status}</p>}
+        {error && <p className="font-mono text-xs text-rust-400">{error}</p>}
 
-        <div className="flex flex-col gap-2 text-sm">
+        <div className="ledger-rule flex flex-col gap-2 pt-5 text-sm">
           {mode !== "register" && (
             <button
               type="button"
@@ -229,7 +225,7 @@ export default function Login() {
                 setMode("register");
                 setError(null);
               }}
-              className="text-slate-400 underline hover:text-slate-200"
+              className="link-quiet text-left"
             >
               New here? Register a passkey
             </button>
@@ -241,7 +237,7 @@ export default function Login() {
                 setMode("login");
                 setError(null);
               }}
-              className="text-slate-400 underline hover:text-slate-200"
+              className="link-quiet text-left"
             >
               Already registered? Sign in with a passkey
             </button>
@@ -253,7 +249,7 @@ export default function Login() {
                 setMode("totp");
                 setError(null);
               }}
-              className="text-slate-400 underline hover:text-slate-200"
+              className="link-quiet text-left"
             >
               Don't have your passkey device? Use an authenticator code
             </button>
@@ -265,7 +261,7 @@ export default function Login() {
                 setMode("recovery");
                 setError(null);
               }}
-              className="text-slate-400 underline hover:text-slate-200"
+              className="link-quiet text-left"
             >
               Lost everything? Use a recovery code
             </button>
