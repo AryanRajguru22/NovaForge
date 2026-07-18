@@ -83,6 +83,14 @@ export default function ApprovalDashboard() {
   const [submittedActions, setSubmittedActions] = useState<Action[]>([]);
   const [approvalHistory, setApprovalHistory] = useState<Approval[]>([]);
   const [currentUser, setCurrentUser] = useState<MeResponse | null>(null);
+  const [policies, setPolicies] = useState<Policy[]>([]);
+
+  // New action modal
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createType, setCreateType] = useState("");
+  const [createNote, setCreateNote] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const [tab, setTab] = useState<"pending" | "submitted" | "history">("pending");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -104,16 +112,18 @@ export default function ApprovalDashboard() {
       const user = await apiGet<MeResponse>("/auth/me");
       setCurrentUser(user);
 
-      // Fetch all three datasets
-      const [pending, submitted, history] = await Promise.all([
+      // Fetch all datasets
+      const [pending, submitted, history, availablePolicies] = await Promise.all([
         apiGet<Approval[]>("/approvals/pending"),
         apiGet<Action[]>("/actions"),
         apiGet<Approval[]>("/approvals/history"),
+        apiGet<Policy[]>("/policies"),
       ]);
 
       setPendingApprovals(pending);
       setSubmittedActions(submitted);
       setApprovalHistory(history);
+      setPolicies(availablePolicies);
 
       if (isInitial) {
         // Handle second-device URL deep linking / direct selection
@@ -392,6 +402,28 @@ export default function ApprovalDashboard() {
     }
   }
 
+  async function submitCreate() {
+    if (!createType.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const created = await apiPost<{ action: Action; approvalRequest: { id: string } }>("/actions", {
+        type: createType.trim(),
+        payload: { note: createNote.trim() || undefined },
+      });
+      setShowCreateModal(false);
+      setCreateType("");
+      setCreateNote("");
+      setTab("submitted");
+      setSelectedId(created.action.id);
+      await loadData();
+    } catch (err) {
+      setCreateError(describeError(err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
   if (loading) {
     return (
       <PageFrame>
@@ -413,16 +445,28 @@ export default function ApprovalDashboard() {
             Review sensitive actions, cast passkey-signed decisions, and manage policies.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            setLoading(true);
-            void loadData();
-          }}
-          className="rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 transition-colors"
-        >
-          Refresh Data
-        </button>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setCreateError(null);
+              setShowCreateModal(true);
+            }}
+            className="rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-white transition-colors"
+          >
+            New action
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              void loadData();
+            }}
+            className="rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 transition-colors"
+          >
+            Refresh Data
+          </button>
+        </div>
       </div>
 
       {error && <Notice kind="error">{error}</Notice>}
@@ -632,6 +676,83 @@ export default function ApprovalDashboard() {
             >
               Done / Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* New Action Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-100">Request a sensitive action</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Creates a new action and routes it through whichever policy matches the action type.
+              </p>
+            </div>
+
+            {createError && <Notice kind="error">{createError}</Notice>}
+
+            <div className="space-y-2">
+              <label className="text-sm text-slate-300" htmlFor="create-action-type">
+                Action type
+              </label>
+              <input
+                id="create-action-type"
+                list="known-action-types"
+                value={createType}
+                onChange={(event) => setCreateType(event.target.value)}
+                placeholder="e.g. TRANSFER_FUNDS"
+                className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-slate-400 focus:outline-none"
+              />
+              <datalist id="known-action-types">
+                {policies.map((policy) => (
+                  <option key={policy.id} value={policy.actionType} />
+                ))}
+              </datalist>
+              {policies.length === 0 ? (
+                <p className="text-xs text-amber-300">
+                  No policies exist yet — create one on the Policies page first, or this will fail with
+                  "no approval policy configured."
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Must match an existing policy's action type exactly (see suggestions above).
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm text-slate-300" htmlFor="create-action-note">
+                Note (optional)
+              </label>
+              <textarea
+                id="create-action-note"
+                value={createNote}
+                onChange={(event) => setCreateNote(event.target.value)}
+                rows={3}
+                placeholder="Context for approvers — becomes the action payload."
+                className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-slate-400 focus:outline-none"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                disabled={creating || !createType.trim()}
+                onClick={() => void submitCreate()}
+                className="flex-1 rounded bg-slate-100 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-white disabled:opacity-50 transition-colors"
+              >
+                {creating ? "Submitting…" : "Submit for approval"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}
