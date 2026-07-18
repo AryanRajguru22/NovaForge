@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import QRCode from "qrcode";
-import { apiGet, apiPost, apiDelete, ApiError } from "../lib/api.js";
+import { apiGet, apiPost, apiDelete, apiPatch, ApiError } from "../lib/api.js";
 
 interface MeResponse {
   id: string;
@@ -13,6 +13,8 @@ interface MeResponse {
     totp: boolean;
     recoveryCodes: number;
   };
+  totpLoginEnabled: boolean;
+  recoveryCodeLoginEnabled: boolean;
 }
 
 interface TotpSetupResponse {
@@ -132,6 +134,23 @@ export default function Settings() {
     }
   }
 
+  async function handleLoginMethodChange(
+    field: "totpLoginEnabled" | "recoveryCodeLoginEnabled",
+    enabled: boolean,
+  ) {
+    setError(null);
+    setBusy(true);
+    try {
+      await apiPatch("/auth/preferences", { [field]: enabled });
+      await refreshUser();
+      setStatus(`${field === "totpLoginEnabled" ? "Authenticator app" : "Recovery-code"} login ${enabled ? "enabled" : "disabled"}.`);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!user) {
     return <div className="p-8 text-slate-100">Loading…</div>;
   }
@@ -244,6 +263,38 @@ export default function Settings() {
 
         <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
           <div>
+            <h2 className="font-medium">Login methods</h2>
+            <p className="text-sm text-slate-400">
+              Keep a backup method enrolled, but turn off its ability to sign in whenever you want.
+            </p>
+          </div>
+
+          <div className="rounded border border-slate-800 bg-slate-950 p-3 text-sm">
+            <p className="font-medium">Passkey</p>
+            <p className="mt-1 text-slate-400">Always enabled — this is your required primary sign-in method.</p>
+          </div>
+
+          <LoginMethodToggle
+            label="Authenticator app (TOTP)"
+            description="Allow the enrolled authenticator app to be used as a fallback sign-in method."
+            enabled={user.totpLoginEnabled}
+            available={user.factors.totp}
+            busy={busy}
+            onChange={(enabled) => handleLoginMethodChange("totpLoginEnabled", enabled)}
+          />
+
+          <LoginMethodToggle
+            label="Recovery codes"
+            description="Allow your unused recovery codes to be used as a fallback sign-in method."
+            enabled={user.recoveryCodeLoginEnabled}
+            available={user.factors.recoveryCodes > 0}
+            busy={busy}
+            onChange={(enabled) => handleLoginMethodChange("recoveryCodeLoginEnabled", enabled)}
+          />
+        </div>
+
+        <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+          <div>
             <h2 className="font-medium">Active sessions</h2>
             <p className="text-sm text-slate-400">
               Devices currently signed in. Trust decays if a session goes too long without
@@ -289,6 +340,43 @@ export default function Settings() {
         {status && <p className="text-sm text-slate-400">{status}</p>}
         {error && <p className="text-sm text-red-400">{error}</p>}
       </div>
+    </div>
+  );
+}
+
+function LoginMethodToggle({
+  label,
+  description,
+  enabled,
+  available,
+  busy,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  enabled: boolean;
+  available: boolean;
+  busy: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  const disabled = !available || busy;
+  return (
+    <div className={`flex items-center justify-between gap-4 rounded border border-slate-800 bg-slate-950 p-3 ${!available ? "opacity-50" : ""}`}>
+      <div>
+        <p className="font-medium text-sm">{label}</p>
+        <p className="mt-1 text-xs text-slate-400">{available ? description : "Set up this method above before it can be used for sign-in."}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={`${label} login ${enabled ? "enabled" : "disabled"}`}
+        disabled={disabled}
+        onClick={() => onChange(!enabled)}
+        className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed ${enabled ? "bg-emerald-500 text-slate-950" : "bg-slate-700 text-slate-200"}`}
+      >
+        {enabled ? "On" : "Off"}
+      </button>
     </div>
   );
 }
