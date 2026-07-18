@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { startTestServer, stopTestServer, apiRequest, createUserWithToken, cleanupUsers, cleanupPolicies, runSuffix } from "./testServer.js";
+import { prisma } from "../src/lib/prisma.js";
 
 describe("policy management", () => {
   const emails = [`policy-admin-${runSuffix}@example.com`, `policy-member-${runSuffix}@example.com`];
   const actionType = "test:policy-crud";
+  const referencedActionType = "test:policy-delete-referenced";
   let adminToken: string;
   let memberToken: string;
   let createdPolicyId: string;
@@ -11,13 +13,13 @@ describe("policy management", () => {
   beforeAll(async () => {
     await startTestServer();
     await cleanupUsers(emails);
-    await cleanupPolicies([actionType]);
+    await cleanupPolicies([actionType, referencedActionType]);
     adminToken = (await createUserWithToken({ email: emails[0], role: "ADMIN" })).token;
     memberToken = (await createUserWithToken({ email: emails[1], role: "MEMBER" })).token;
   });
 
   afterAll(async () => {
-    await cleanupPolicies([actionType]);
+    await cleanupPolicies([actionType, referencedActionType]);
     await cleanupUsers(emails);
     await stopTestServer();
   });
@@ -70,6 +72,32 @@ describe("policy management", () => {
     });
     expect(status).toBe(400);
     expect(data.error).toMatch(/cannot use itself/);
+  });
+
+  it("refuses to delete a policy that an approval request still references", async () => {
+    const policy = await apiRequest("/policies", {
+      method: "POST",
+      token: adminToken,
+      body: { actionType: referencedActionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"] },
+    });
+    const policyId = policy.data.id;
+
+    const created = await apiRequest("/actions", {
+      method: "POST",
+      token: adminToken,
+      body: { type: referencedActionType, payload: { amount: 1 } },
+    });
+
+    // This is a real bug found via manual testing: deleting a policy with an
+    // existing ApprovalRequest used to throw a raw Postgres FK violation
+    // (500). The route now checks first and returns a clean 400.
+    const del = await apiRequest(`/policies/${policyId}`, { method: "DELETE", token: adminToken });
+    expect(del.status).toBe(400);
+    expect(del.data.error).toMatch(/still reference it/);
+
+    await prisma.approvalRequest.deleteMany({ where: { policyId } });
+    await prisma.sensitiveAction.deleteMany({ where: { id: created.data.action.id } });
+    await prisma.approvalPolicy.delete({ where: { id: policyId } });
   });
 
   it("deletes a policy", async () => {

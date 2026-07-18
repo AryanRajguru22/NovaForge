@@ -219,6 +219,18 @@ policiesRouter.delete("/:id", requireAuth, requireAdmin, async (req: Request, re
       return;
     }
 
+    // ApprovalRequest.policyId has no onDelete behavior, so Postgres defaults
+    // to RESTRICT — deleting a policy that any request (past or present)
+    // still references would otherwise throw a raw FK violation. Check first
+    // so the caller gets an explainable error instead of a bare 500.
+    const referencingRequestCount = await prisma.approvalRequest.count({ where: { policyId: id } });
+    if (referencingRequestCount > 0) {
+      res.status(400).json({
+        error: `Cannot delete this policy: ${referencingRequestCount} approval request(s) still reference it.`,
+      });
+      return;
+    }
+
     await prisma.approvalPolicy.delete({
       where: { id },
     });
