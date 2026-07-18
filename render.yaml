@@ -1,0 +1,37 @@
+# Reference only — NOT auto-synced by Render. Render's Blueprint flow needs
+# a connected GitHub repo to read this file, and this repo lives in an org
+# whose access can't be granted to Render. Deployed instead by pushing
+# Dockerfile.render's image to Docker Hub (twirlyreflex/novaforge) and
+# creating the web service by hand in the Render dashboard, pointing at that
+# image. Kept here as the source of truth for what env vars that manual
+# service needs — see README.md for the exact dashboard steps.
+databases:
+  - name: novaforge-db
+    plan: free
+    databaseName: novaforge
+    user: novaforge
+
+services:
+  - type: web
+    name: novaforge
+    runtime: image
+    image:
+      url: docker.io/twirlyreflex/novaforge:latest
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: novaforge-db
+          property: connectionString
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: RP_NAME
+        value: NovaForge
+      - key: NODE_ENV
+        value: production
+      # RP_ID and RP_ORIGIN are deliberately unset — server/src/lib/env.ts
+      # derives both from Render's auto-injected RENDER_EXTERNAL_URL, so
+      # they can't drift from the real assigned *.onrender.com URL.
