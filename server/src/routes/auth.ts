@@ -358,6 +358,11 @@ authRouter.post("/login/totp", loginAttemptLimit, async (req, res) => {
     return;
   }
 
+  if (!user.totpLoginEnabled) {
+    res.status(403).json({ error: "TOTP login is disabled for this account" });
+    return;
+  }
+
   if (!authenticator.check(token, totpCredential.secret)) {
     res.status(400).json({ error: "Invalid code" });
     return;
@@ -439,6 +444,10 @@ authRouter.post("/login/recovery-code", loginAttemptLimit, async (req, res) => {
   const { email, code } = parsed.data;
 
   const user = await prisma.user.findUnique({ where: { email }, include: { credentials: true } });
+  if (user && !user.recoveryCodeLoginEnabled) {
+    res.status(403).json({ error: "Recovery-code login is disabled for this account" });
+    return;
+  }
   const match = user?.credentials.find(
     (c) => c.type === "RECOVERY_CODE" && c.secret && verifySecret(code, c.secret),
   );
@@ -525,6 +534,76 @@ authRouter.get("/me", requireAuth, async (req, res) => {
       totp: user.credentials.some((c) => c.type === "TOTP"),
       recoveryCodes: user.credentials.filter((c) => c.type === "RECOVERY_CODE").length,
     },
+    totpLoginEnabled: user.totpLoginEnabled,
+    recoveryCodeLoginEnabled: user.recoveryCodeLoginEnabled,
+  });
+});
+
+const preferencesSchema = z
+  .object({
+    totpLoginEnabled: z.boolean().optional(),
+    recoveryCodeLoginEnabled: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (data) => data.totpLoginEnabled !== undefined || data.recoveryCodeLoginEnabled !== undefined,
+    { message: "Provide at least one login preference to update" },
+  );
+
+authRouter.patch("/preferences", requireAuth, async (req, res) => {
+  const parsed = preferencesSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const changes = [
+    {
+      field: "totpLoginEnabled" as const,
+      oldValue: user.totpLoginEnabled,
+      newValue: parsed.data.totpLoginEnabled,
+    },
+    {
+      field: "recoveryCodeLoginEnabled" as const,
+      oldValue: user.recoveryCodeLoginEnabled,
+      newValue: parsed.data.recoveryCodeLoginEnabled,
+    },
+  ].filter((change): change is { field: "totpLoginEnabled" | "recoveryCodeLoginEnabled"; oldValue: boolean; newValue: boolean } =>
+    change.newValue !== undefined && change.newValue !== change.oldValue,
+  );
+
+  if (changes.length > 0) {
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: Object.fromEntries(changes.map((change) => [change.field, change.newValue])),
+    });
+
+    for (const change of changes) {
+      await appendAuditLog({
+        entityType: "User",
+        entityId: user.id,
+        event: "auth_preference_changed",
+        actorId: user.id,
+        metadata: change,
+      });
+    }
+
+    res.json({
+      totpLoginEnabled: updated.totpLoginEnabled,
+      recoveryCodeLoginEnabled: updated.recoveryCodeLoginEnabled,
+    });
+    return;
+  }
+
+  res.json({
+    totpLoginEnabled: user.totpLoginEnabled,
+    recoveryCodeLoginEnabled: user.recoveryCodeLoginEnabled,
   });
 });
 
