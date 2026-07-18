@@ -12,7 +12,7 @@ import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { appendAuditLog } from "../lib/audit.js";
 import { QuorumType } from "@prisma/client";
-import { io } from "../index.js";
+import { io } from "../app.js";
 
 export const approvalsRouter = Router();
 
@@ -213,9 +213,12 @@ approvalsRouter.post("/:id/vote", requireAuth, async (req: Request, res: Respons
     }
 
     // Verify assertion
+    // Real WebAuthn assertions can't be scripted without a live authenticator, so the
+    // test suite substitutes a mock verification result — gated on NODE_ENV=test as well
+    // as the flag itself, so this can never bypass signature checks outside a test run.
     let verification;
     try {
-      if (process.env.BYPASS_WEBAUTHN === "true") {
+      if (process.env.NODE_ENV === "test" && process.env.BYPASS_WEBAUTHN === "true") {
         verification = {
           verified: true,
           authenticationInfo: {
