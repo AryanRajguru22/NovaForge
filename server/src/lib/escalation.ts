@@ -2,14 +2,24 @@ import { prisma } from "./prisma.js";
 import { appendAuditLog } from "./audit.js";
 
 let ioInstance: any = null;
+let intervalHandle: NodeJS.Timeout | null = null;
 
 export function initEscalationService(io: any) {
   ioInstance = io;
   // Start the interval timer
   const intervalMs = 5000; // Check every 5 seconds for responsive testing / demo
-  const interval = setInterval(checkEscalations, intervalMs);
-  interval.unref(); // Prevent blocking process termination
+  intervalHandle = setInterval(checkEscalations, intervalMs);
+  intervalHandle.unref(); // Prevent blocking process termination
   console.log(`Escalation service started (interval: ${intervalMs}ms)`);
+}
+
+/** Stops the polling interval — used by tests so one file's timer doesn't keep
+ * firing (and racing appendAuditLog) once the next test file has moved on. */
+export function stopEscalationService() {
+  if (intervalHandle) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
+  }
 }
 
 let isRunning = false;
