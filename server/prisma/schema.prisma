@@ -39,12 +39,14 @@ enum VoteDecision {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String
-  role      Role     @default(MEMBER)
-  riskTier  Int      @default(0)
-  createdAt DateTime @default(now())
+  id                       String   @id @default(uuid())
+  email                    String   @unique
+  name                     String
+  role                     Role     @default(MEMBER)
+  riskTier                 Int      @default(0)
+  totpLoginEnabled         Boolean  @default(true)
+  recoveryCodeLoginEnabled Boolean  @default(true)
+  createdAt                DateTime @default(now())
 
   credentials       Credential[]
   sessions          Session[]
