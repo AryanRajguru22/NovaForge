@@ -1,0 +1,41 @@
+# Combined single-service image for the free-tier Render deploy: one
+# container runs the Express API and serves the built React client from the
+# same origin, sidestepping cross-site cookie/CORS complications that a
+# split client+server deploy on two separate free services would introduce.
+# Local dev and the docker-compose demo stack are unaffected — they still
+# use server/Dockerfile and client/Dockerfile as two containers behind nginx.
+
+# ---- client build ----
+FROM node:20-alpine AS client-build
+WORKDIR /client
+COPY client/package.json client/package-lock.json ./
+RUN npm ci
+COPY client/ .
+RUN npm run build
+
+# ---- server build ----
+FROM node:20-alpine AS server-build
+WORKDIR /server
+COPY server/package.json server/package-lock.json ./
+RUN npm ci
+COPY server/ .
+RUN npx prisma generate
+RUN npm run build
+
+# ---- runtime ----
+FROM node:20-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apk add --no-cache openssl
+
+COPY server/package.json server/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY server/prisma ./prisma
+RUN npx prisma generate
+
+COPY --from=server-build /server/dist ./dist
+COPY --from=client-build /client/dist ./client-dist
+
+EXPOSE 4000
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
