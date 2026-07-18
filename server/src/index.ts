@@ -5,6 +5,10 @@ import cookieParser from "cookie-parser";
 import { Server as SocketIOServer } from "socket.io";
 import { env } from "./lib/env.js";
 import { authRouter } from "./routes/auth.js";
+import { policiesRouter } from "./routes/policies.js";
+import { actionsRouter } from "./routes/actions.js";
+import { approvalsRouter } from "./routes/approvals.js";
+import { initEscalationService } from "./lib/escalation.js";
 
 const app = express();
 app.use(cors({ origin: env.rpOrigin, credentials: true }));
@@ -16,11 +20,9 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/auth", authRouter);
-
-// Further route modules mount here as they're built, e.g.:
-// app.use("/actions", actionsRouter);
-// app.use("/approvals", approvalsRouter);
-// app.use("/policies", policiesRouter);
+app.use("/policies", policiesRouter);
+app.use("/actions", actionsRouter);
+app.use("/approvals", approvalsRouter);
 
 const httpServer = http.createServer(app);
 
@@ -36,6 +38,8 @@ io.on("connection", (socket) => {
     socket.join(challengeId);
   });
 });
+
+initEscalationService(io);
 
 httpServer.listen(env.port, () => {
   console.log(`NovaForge server listening on :${env.port}`);

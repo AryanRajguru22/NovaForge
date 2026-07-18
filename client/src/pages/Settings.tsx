@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import QRCode from "qrcode";
 import { apiGet, apiPost, apiDelete, apiPatch, ApiError } from "../lib/api.js";
 
@@ -158,6 +158,17 @@ export default function Settings() {
   return (
     <div className="min-h-screen bg-slate-950 p-8 text-slate-100">
       <div className="mx-auto max-w-md space-y-6">
+        <nav className="flex items-center gap-5 border-b border-slate-800 pb-4 text-sm text-slate-400">
+          <Link to="/approvals" className="hover:text-slate-200 transition-colors">
+            Approvals
+          </Link>
+          <Link to="/policies" className="hover:text-slate-200 transition-colors">
+            Policies
+          </Link>
+          <Link to="/settings" className="font-semibold text-slate-100 hover:text-white">
+            Security Settings
+          </Link>
+        </nav>
         <div>
           <h1 className="text-xl font-semibold">Security settings</h1>
           <p className="text-sm text-slate-400">{user.email}</p>
