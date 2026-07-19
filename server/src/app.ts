@@ -11,6 +11,7 @@ import { authRouter } from "./routes/auth.js";
 import { policiesRouter } from "./routes/policies.js";
 import { actionsRouter } from "./routes/actions.js";
 import { approvalsRouter } from "./routes/approvals.js";
+import { auditRouter } from "./routes/audit.js";
 import { usersRouter } from "./routes/users.js";
 import { initEscalationService } from "./lib/escalation.js";
 
@@ -45,6 +46,7 @@ apiRouter.use("/auth", authRouter);
 apiRouter.use("/policies", policiesRouter);
 apiRouter.use("/actions", actionsRouter);
 apiRouter.use("/approvals", approvalsRouter);
+apiRouter.use("/audit", auditRouter);
 apiRouter.use("/users", usersRouter);
 // Bare mount is only for docker-compose's server container, where nginx has
 // already stripped the /api prefix before proxying here — a client isn't

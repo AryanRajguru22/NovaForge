@@ -191,6 +191,9 @@ export default function Settings() {
           <Link to="/policies" className="link-quiet">
             Policies
           </Link>
+          <Link to="/audit" className="link-quiet">
+            Audit log
+          </Link>
           <Link to="/users" className="link-quiet">
             Users
           </Link>

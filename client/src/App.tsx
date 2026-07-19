@@ -3,6 +3,7 @@ import Login from "./pages/Login.js";
 import Settings from "./pages/Settings.js";
 import ApprovalDashboard from "./pages/ApprovalDashboard.js";
 import PolicyManagement from "./pages/PolicyManagement.js";
+import AuditLog from "./pages/AuditLog.js";
 import UserManagement from "./pages/UserManagement.js";
 
 function Home() {
@@ -27,6 +28,9 @@ function Home() {
           </Link>
           <Link to="/approvals" className="link-quiet text-sm">
             Approval dashboard
+          </Link>
+          <Link to="/audit" className="link-quiet text-sm">
+            Audit log
           </Link>
           <Link to="/users" className="link-quiet text-sm">
             User roles
@@ -63,6 +67,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/approvals" element={<ApprovalDashboard />} />
       <Route path="/policies" element={<PolicyManagement />} />
+      <Route path="/audit" element={<AuditLog />} />
       <Route path="/users" element={<UserManagement />} />
       <Route path="/settings" element={<Settings />} />
     </Routes>
