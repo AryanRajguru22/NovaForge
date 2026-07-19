@@ -3,23 +3,30 @@ import { startTestServer, stopTestServer, apiRequest, createUserWithToken, clean
 import { prisma } from "../src/lib/prisma.js";
 
 describe("policy management", () => {
-  const emails = [`policy-admin-${runSuffix}@example.com`, `policy-member-${runSuffix}@example.com`];
+  const emails = [
+    `policy-admin-${runSuffix}@example.com`,
+    `policy-member-${runSuffix}@example.com`,
+    `policy-superadmin-${runSuffix}@example.com`,
+  ];
   const actionType = "test:policy-crud";
   const referencedActionType = "test:policy-delete-referenced";
+  const superAdminActionType = "test:policy-superadmin-crud";
   let adminToken: string;
   let memberToken: string;
+  let superAdminToken: string;
   let createdPolicyId: string;
 
   beforeAll(async () => {
     await startTestServer();
     await cleanupUsers(emails);
-    await cleanupPolicies([actionType, referencedActionType]);
+    await cleanupPolicies([actionType, referencedActionType, superAdminActionType]);
     adminToken = (await createUserWithToken({ email: emails[0], role: "ADMIN" })).token;
     memberToken = (await createUserWithToken({ email: emails[1], role: "MEMBER" })).token;
+    superAdminToken = (await createUserWithToken({ email: emails[2], role: "SUPER_ADMIN" })).token;
   });
 
   afterAll(async () => {
-    await cleanupPolicies([actionType, referencedActionType]);
+    await cleanupPolicies([actionType, referencedActionType, superAdminActionType]);
     await cleanupUsers(emails);
     await stopTestServer();
   });
@@ -42,6 +49,16 @@ describe("policy management", () => {
     expect(status).toBe(201);
     expect(data.actionType).toBe(actionType);
     createdPolicyId = data.id;
+  });
+
+  it("lets a super admin do everything an admin can, including creating a policy", async () => {
+    const { status, data } = await apiRequest("/policies", {
+      method: "POST",
+      token: superAdminToken,
+      body: { actionType: superAdminActionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"] },
+    });
+    expect(status).toBe(201);
+    expect(data.actionType).toBe(superAdminActionType);
   });
 
   it("rejects a duplicate actionType", async () => {

@@ -59,7 +59,7 @@ export async function apiRequest<T = any>(
 export async function createUserWithToken(overrides: {
   email: string;
   name?: string;
-  role?: "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
+  role?: "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
 }) {
   const user = await prisma.user.create({
     data: {

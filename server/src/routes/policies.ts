@@ -15,7 +15,9 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction): Pr
   }
   try {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-    if (!user || user.role !== Role.ADMIN) {
+    // SUPER_ADMIN is a superset of ADMIN -- it should never be locked out of
+    // anything an ADMIN can do, only granted more (role/audit access).
+    if (!user || (user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN)) {
       res.status(403).json({ error: "Forbidden: Admins only" });
       return;
     }
