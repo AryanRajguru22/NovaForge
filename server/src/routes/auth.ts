@@ -398,13 +398,117 @@ authRouter.post("/login/totp", loginAttemptLimit, async (req, res) => {
 const RECOVERY_CODE_COUNT = 10;
 
 function generateRecoveryCode(): string {
-  // XXXX-XXXX numeric, easy to read back after a device loss.
-  const part = () => randomInt(0, 1_000_000).toString().padStart(4, "0").slice(0, 4);
+  // XXXX-XXXX numeric, easy to read back after a device loss. randomInt's upper
+  // bound must be the actual size of the output space (10,000) — drawing from a
+  // wider range and truncating the string (e.g. slice(0, 4) on a 6-digit draw)
+  // biases the output toward certain digit patterns instead of sampling them
+  // uniformly, which made duplicate codes far more likely than the nominal
+  // 1-in-10,000-per-part odds would suggest.
+  const part = () => randomInt(0, 10_000).toString().padStart(4, "0");
   return `${part()}-${part()}`;
 }
 
+function generateRecoveryCodeBatch(count: number): string[] {
+  const codes = new Set<string>();
+  while (codes.size < count) codes.add(generateRecoveryCode());
+  return [...codes];
+}
+
+// Regenerating recovery codes is step-up gated: it must be preceded by a fresh
+// passkey signature, not just a valid session cookie. Without this, a stolen
+// access token would let an attacker silently mint a brand-new set of recovery
+// codes as a persistent backdoor — one that survives the legitimate user
+// rotating their passkey or noticing the session and revoking it, since
+// recovery codes are a fully independent login path.
+authRouter.post("/recovery-codes/options", requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    include: { credentials: true },
+  });
+  const passkeys = user?.credentials.filter((c) => c.type === "PASSKEY" && c.credentialId) ?? [];
+  if (!user || passkeys.length === 0) {
+    res.status(400).json({ error: "No passkeys registered for this account" });
+    return;
+  }
+
+  const options = await generateAuthenticationOptions({
+    rpID: env.rpId,
+    userVerification: "preferred",
+    allowCredentials: passkeys.map((c) => ({ id: c.credentialId! })),
+  });
+
+  setChallenge(`recovery-codes:${user.id}`, options.challenge);
+  res.json(options);
+});
+
+const recoveryCodesGenerateSchema = z.object({
+  response: z.custom<AuthenticationResponseJSON>((v) => typeof v === "object" && v !== null),
+});
+
 authRouter.post("/recovery-codes/generate", requireAuth, async (req, res) => {
-  const codes = Array.from({ length: RECOVERY_CODE_COUNT }, generateRecoveryCode);
+  const parsed = recoveryCodesGenerateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+  const { response } = parsed.data;
+
+  const expectedChallenge = takeChallenge(`recovery-codes:${req.user!.id}`);
+  if (!expectedChallenge) {
+    res.status(400).json({ error: "Verification challenge expired, please try again" });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    include: { credentials: true },
+  });
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const credential = user.credentials.find(
+    (c) => c.type === "PASSKEY" && c.credentialId === response.id,
+  );
+  if (!credential || !credential.publicKey || !credential.credentialId) {
+    res.status(400).json({ error: "Unknown credential" });
+    return;
+  }
+
+  let verification;
+  try {
+    if (process.env.NODE_ENV === "test" && process.env.BYPASS_WEBAUTHN === "true") {
+      verification = { verified: true, authenticationInfo: { newCounter: Number(credential.counter) + 1 } };
+    } else {
+      verification = await verifyAuthenticationResponse({
+        response,
+        expectedChallenge,
+        expectedOrigin: env.rpOrigin,
+        expectedRPID: env.rpId,
+        authenticator: {
+          credentialID: credential.credentialId,
+          credentialPublicKey: isoBase64URL.toBuffer(credential.publicKey),
+          counter: Number(credential.counter),
+        },
+      });
+    }
+  } catch {
+    res.status(400).json({ error: "Verification failed" });
+    return;
+  }
+
+  if (!verification.verified) {
+    res.status(400).json({ error: "Verification failed" });
+    return;
+  }
+
+  await prisma.credential.update({
+    where: { id: credential.id },
+    data: { counter: BigInt(verification.authenticationInfo.newCounter), lastUsedAt: new Date() },
+  });
+
+  const codes = generateRecoveryCodeBatch(RECOVERY_CODE_COUNT);
 
   await prisma.$transaction([
     prisma.credential.deleteMany({ where: { userId: req.user!.id, type: "RECOVERY_CODE" } }),

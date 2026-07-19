@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import QRCode from "qrcode";
+import { startAuthentication } from "@simplewebauthn/browser";
+import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/types";
 import { apiGet, apiPost, apiDelete, apiPatch, ApiError } from "../lib/api.js";
 
 interface MeResponse {
@@ -110,7 +112,14 @@ export default function Settings() {
     setError(null);
     setBusy(true);
     try {
-      const { codes } = await apiPost<{ codes: string[] }>("/auth/recovery-codes/generate", {});
+      setStatus("Requesting verification challenge…");
+      const options = await apiPost<PublicKeyCredentialRequestOptionsJSON>("/auth/recovery-codes/options", {});
+
+      setStatus("Confirm with your passkey to generate new codes…");
+      const response = await startAuthentication(options);
+
+      setStatus("Verifying…");
+      const { codes } = await apiPost<{ codes: string[] }>("/auth/recovery-codes/generate", { response });
       setRecoveryCodes(codes);
       setStatus("New recovery codes generated — any older codes no longer work.");
     } catch (err) {
@@ -237,7 +246,7 @@ export default function Settings() {
             <h2 className="font-display text-lg text-parchment-100">Recovery codes</h2>
             <p className="font-serif text-sm text-ash-400">
               One-time codes for when neither your passkey nor authenticator app is available.
-              Generating new codes invalidates any previous ones.
+              Generating new codes requires your passkey and invalidates any previous ones.
             </p>
           </div>
 
