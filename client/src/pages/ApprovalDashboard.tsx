@@ -977,9 +977,11 @@ function ApprovalDetailsPanel({
               value={
                 approval.policy.quorumType === "ROLE_BASED"
                   ? `Requires approval from all eligible roles`
-                  : `Requires minimum ${approval.policy.minApprovals} vote${
-                      approval.policy.minApprovals === 1 ? "" : "s"
-                    } (N of M)`
+                  : approval.policy.quorumType === "WEIGHTED"
+                    ? `Requires approving voters' combined vote weight to reach ${approval.policy.minApprovals}`
+                    : `Requires minimum ${approval.policy.minApprovals} vote${
+                        approval.policy.minApprovals === 1 ? "" : "s"
+                      } (N of M)`
               }
             />
             <Detail

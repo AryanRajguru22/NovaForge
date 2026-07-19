@@ -23,7 +23,7 @@ async function requireSuperAdmin(req: Request, res: Response, next: NextFunction
 usersRouter.get("/", requireAuth, requireSuperAdmin, async (_req, res) => {
   const users = await prisma.user.findMany({
     orderBy: { name: "asc" },
-    select: { id: true, email: true, name: true, role: true, createdAt: true },
+    select: { id: true, email: true, name: true, role: true, voteWeight: true, createdAt: true },
   });
   res.json(users);
 });
@@ -78,4 +78,45 @@ usersRouter.patch("/:id/role", requireAuth, requireSuperAdmin, async (req, res) 
   });
 
   res.json({ id: updated.id, role: updated.role });
+});
+
+const updateWeightSchema = z.object({
+  voteWeight: z.number().int().min(1).max(10),
+});
+
+// A WEIGHTED policy's outcome depends entirely on how much each approver's
+// vote counts, so changing that is exactly as sensitive as changing a role --
+// same super-admin gate as /role above.
+usersRouter.patch("/:id/weight", requireAuth, requireSuperAdmin, async (req, res) => {
+  const parsed = updateWeightSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+
+  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  if (target.voteWeight === parsed.data.voteWeight) {
+    res.json({ id: target.id, voteWeight: target.voteWeight });
+    return;
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: target.id },
+    data: { voteWeight: parsed.data.voteWeight },
+  });
+
+  await appendAuditLog({
+    entityType: "User",
+    entityId: target.id,
+    event: "VOTE_WEIGHT_CHANGED",
+    actorId: req.user!.id,
+    metadata: { from: target.voteWeight, to: updated.voteWeight },
+  });
+
+  res.json({ id: updated.id, voteWeight: updated.voteWeight });
 });

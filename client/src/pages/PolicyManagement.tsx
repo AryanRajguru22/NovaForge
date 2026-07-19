@@ -77,7 +77,11 @@ export default function PolicyManagement() {
                       <div>
                         <p className="font-medium text-parchment-100">{policy.actionType}</p>
                         <p className="mt-1 text-sm text-ash-400">
-                          {policy.quorumType.replace(/_/g, " ")} · {policy.minApprovals} required · {policy.escalationTimeoutSec}s escalation
+                          {policy.quorumType.replace(/_/g, " ")} ·{" "}
+                          {policy.quorumType === "WEIGHTED"
+                            ? `${policy.minApprovals} weight required`
+                            : `${policy.minApprovals} required`}{" "}
+                          · {policy.escalationTimeoutSec}s escalation
                         </p>
                         <p className="font-mono mt-1 text-xs text-ash-400">
                           {policy.eligibleRoles.map((role) => role.replace(/_/g, " ")).join(", ")}
@@ -119,8 +123,14 @@ export default function PolicyManagement() {
                   <option value="WEIGHTED">Weighted</option>
                 </select>
               </Field>
-              <Field label="Minimum approvals">
+              <Field label={form.quorumType === "WEIGHTED" ? "Weight threshold" : "Minimum approvals"}>
                 <input required min="0" type="number" value={form.minApprovals} onChange={(event) => update("minApprovals", Number(event.target.value))} className="input" />
+                {form.quorumType === "WEIGHTED" && (
+                  <span className="mt-1 block text-xs text-ash-400">
+                    Sum of approving voters' vote weights (set per account on the Users page) must
+                    reach this number.
+                  </span>
+                )}
               </Field>
               <fieldset>
                 <legend className="mb-2 text-sm text-ash-300">Eligible roles</legend>

@@ -45,6 +45,10 @@ model User {
   name                     String
   role                     Role     @default(MEMBER)
   riskTier                 Int      @default(0)
+  // Only meaningful for WEIGHTED approval policies -- ApprovalPolicy.minApprovals
+  // is reinterpreted as the weight threshold for that quorum type, and a vote's
+  // weight is this field on the voting user at the time they vote.
+  voteWeight               Int      @default(1)
   totpLoginEnabled         Boolean  @default(true)
   recoveryCodeLoginEnabled Boolean  @default(true)
   createdAt                DateTime @default(now())

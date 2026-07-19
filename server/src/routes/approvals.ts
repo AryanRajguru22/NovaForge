@@ -297,7 +297,13 @@ approvalsRouter.post("/:id/vote", requireAuth, async (req: Request, res: Respons
             updatedStatus = "APPROVED";
           }
         } else if (approvalRequest.policy.quorumType === QuorumType.WEIGHTED) {
-          // TODO: Implement WEIGHTED quorum once schema weights are supported
+          // For WEIGHTED policies, minApprovals is the weight threshold rather
+          // than a headcount -- each approver's User.voteWeight (settable per
+          // account by a super admin) is summed instead of just counting votes.
+          const totalWeight = approvedVotes.reduce((sum, v) => sum + v.approver.voteWeight, 0);
+          if (totalWeight >= approvalRequest.policy.minApprovals) {
+            updatedStatus = "APPROVED";
+          }
         }
       }
 

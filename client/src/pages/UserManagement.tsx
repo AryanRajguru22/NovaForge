@@ -10,6 +10,7 @@ interface UserRow {
   email: string;
   name: string;
   role: Role;
+  voteWeight: number;
   createdAt: string;
 }
 
@@ -64,6 +65,22 @@ export default function UserManagement() {
     }
   }
 
+  async function changeWeight(user: UserRow, voteWeight: number) {
+    if (!Number.isInteger(voteWeight) || voteWeight < 1 || voteWeight > 10 || voteWeight === user.voteWeight) return;
+    setError(null);
+    setStatus(null);
+    setSavingId(user.id);
+    try {
+      await apiPatch(`/users/${user.id}/weight`, { voteWeight });
+      setUsers((current) => current.map((u) => (u.id === user.id ? { ...u, voteWeight } : u)));
+      setStatus(`${user.name}'s vote weight changed to ${voteWeight}.`);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   return (
     <main className="min-h-screen p-5 sm:p-8">
       <div className="mx-auto max-w-4xl space-y-6">
@@ -79,7 +96,9 @@ export default function UserManagement() {
           <p className="eyebrow">Governance</p>
           <h1 className="font-display mt-1 text-3xl text-parchment-100">User roles</h1>
           <p className="font-serif mt-1 text-sm text-ash-400">
-            Only a super admin can change a user's role or view the audit log.
+            Only a super admin can change a user's role, vote weight, or view the audit log. Vote
+            weight only matters for WEIGHTED-quorum policies, where each approver's vote counts
+            for this many points toward the policy's threshold.
           </p>
         </div>
 
@@ -103,6 +122,7 @@ export default function UserManagement() {
                     <th className="p-3 font-normal">Name</th>
                     <th className="p-3 font-normal">Email</th>
                     <th className="p-3 font-normal">Role</th>
+                    <th className="p-3 font-normal">Vote weight</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -126,6 +146,17 @@ export default function UserManagement() {
                             </option>
                           ))}
                         </select>
+                      </td>
+                      <td className="p-3">
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={user.voteWeight}
+                          disabled={savingId === user.id}
+                          onChange={(e) => changeWeight(user, Number(e.target.value))}
+                          className="w-16 rounded border border-iron-700 bg-iron-950 px-2 py-1 text-sm text-parchment-100"
+                        />
                       </td>
                     </tr>
                   ))}
