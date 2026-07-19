@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, apiDelete, apiGet, apiPost, apiPut } from "../lib/api.js";
 
-type Role = "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
+type Role = "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
 type QuorumType = "N_OF_M" | "ROLE_BASED" | "WEIGHTED";
 interface Policy { id: string; actionType: string; quorumType: QuorumType; minApprovals: number; eligibleRoles: Role[]; fallbackPolicyId: string | null; escalationTimeoutSec: number }
 interface FormState { actionType: string; quorumType: QuorumType; minApprovals: number; eligibleRoles: Role[]; fallbackPolicyId: string; escalationTimeoutSec: number }
-const roles: Role[] = ["ADMIN", "SENIOR_APPROVER", "APPROVER", "MEMBER"];
+const roles: Role[] = ["SUPER_ADMIN", "ADMIN", "SENIOR_APPROVER", "APPROVER", "MEMBER"];
 const blankForm: FormState = { actionType: "", quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["APPROVER"], fallbackPolicyId: "", escalationTimeoutSec: 300 };
 
 export default function PolicyManagement() {
