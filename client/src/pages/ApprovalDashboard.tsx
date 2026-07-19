@@ -772,6 +772,9 @@ function PageFrame({ children }: { children: ReactNode }) {
           <Link to="/policies" className="link-quiet">
             Policies
           </Link>
+          <Link to="/users" className="link-quiet">
+            Users
+          </Link>
           <Link to="/settings" className="link-quiet">
             Security Settings
           </Link>

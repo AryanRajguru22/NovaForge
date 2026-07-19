@@ -49,6 +49,7 @@ export default function PolicyManagement() {
         <nav className="ledger-rule flex gap-5 pb-4 text-sm text-ash-400">
           <Link to="/approvals" className="link-quiet">Approvals</Link>
           <Link to="/policies" className="font-semibold text-parchment-100">Policies</Link>
+          <Link to="/users" className="link-quiet">Users</Link>
           <Link to="/settings" className="link-quiet">Security settings</Link>
         </nav>
         <div>

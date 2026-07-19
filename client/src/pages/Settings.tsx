@@ -191,6 +191,9 @@ export default function Settings() {
           <Link to="/policies" className="link-quiet">
             Policies
           </Link>
+          <Link to="/users" className="link-quiet">
+            Users
+          </Link>
           <Link to="/settings" className="font-semibold text-parchment-100">
             Security Settings
           </Link>

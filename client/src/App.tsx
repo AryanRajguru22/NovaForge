@@ -3,6 +3,7 @@ import Login from "./pages/Login.js";
 import Settings from "./pages/Settings.js";
 import ApprovalDashboard from "./pages/ApprovalDashboard.js";
 import PolicyManagement from "./pages/PolicyManagement.js";
+import UserManagement from "./pages/UserManagement.js";
 
 function Home() {
   return (
@@ -26,6 +27,9 @@ function Home() {
           </Link>
           <Link to="/approvals" className="link-quiet text-sm">
             Approval dashboard
+          </Link>
+          <Link to="/users" className="link-quiet text-sm">
+            User roles
           </Link>
           <Link to="/settings" className="link-quiet text-sm">
             Security settings
@@ -59,6 +63,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/approvals" element={<ApprovalDashboard />} />
       <Route path="/policies" element={<PolicyManagement />} />
+      <Route path="/users" element={<UserManagement />} />
       <Route path="/settings" element={<Settings />} />
     </Routes>
   );
