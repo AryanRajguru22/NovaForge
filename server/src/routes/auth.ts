@@ -725,17 +725,70 @@ authRouter.get("/sessions", requireAuth, async (req, res) => {
     where: { userId: req.user!.id },
     orderBy: { lastVerifiedAt: "desc" },
   });
+  // A single physical device can hold more than one Session row (e.g. logging
+  // in again after the old session expired, or a second tab starting a fresh
+  // login). Session id is per-login, not per-device, so "current" alone can't
+  // tell two rows from the same device apart from a genuinely different one —
+  // compare deviceId (the passkey/credential used to sign in) against the
+  // active session's deviceId for that.
+  const activeSession = sessions.find((s) => s.id === req.user!.sessionId);
+
+  // Session.deviceId is the id of the Credential used to sign that session in,
+  // so the human-readable label lives on Credential, not Session.
+  const credentials = await prisma.credential.findMany({
+    where: { id: { in: sessions.map((s) => s.deviceId) } },
+    select: { id: true, deviceLabel: true },
+  });
+  const labelByDeviceId = new Map(credentials.map((c) => [c.id, c.deviceLabel]));
+
   res.json(
     sessions.map((s) => ({
       id: s.id,
       deviceId: s.deviceId,
+      deviceLabel: labelByDeviceId.get(s.deviceId) ?? null,
       trustLevel: s.trustLevel,
       createdAt: s.createdAt,
       expiresAt: s.expiresAt,
       lastVerifiedAt: s.lastVerifiedAt,
       current: s.id === req.user!.sessionId,
+      sameDevice: activeSession ? s.deviceId === activeSession.deviceId : false,
     })),
   );
+});
+
+const renameDeviceSchema = z.object({
+  deviceLabel: z.string().trim().min(1).max(60),
+});
+
+// Renaming is scoped to the credential behind the caller's own active
+// session — not an arbitrary session id in the list — so a user can't relabel
+// (or, via id guessing, learn anything about) a device that isn't the one
+// they're currently typing on.
+authRouter.patch("/sessions/current/label", requireAuth, async (req, res) => {
+  const parsed = renameDeviceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+    return;
+  }
+
+  const session = await prisma.session.findUnique({ where: { id: req.user!.sessionId } });
+  if (!session || session.userId !== req.user!.id) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  const credential = await prisma.credential.findUnique({ where: { id: session.deviceId } });
+  if (!credential || credential.userId !== req.user!.id) {
+    res.status(404).json({ error: "Credential not found" });
+    return;
+  }
+
+  const updated = await prisma.credential.update({
+    where: { id: credential.id },
+    data: { deviceLabel: parsed.data.deviceLabel },
+  });
+
+  res.json({ deviceLabel: updated.deviceLabel });
 });
 
 authRouter.delete("/sessions/:id", requireAuth, async (req, res) => {

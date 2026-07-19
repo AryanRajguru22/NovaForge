@@ -32,6 +32,8 @@ interface SessionInfo {
   expiresAt: string;
   lastVerifiedAt: string;
   current: boolean;
+  sameDevice: boolean;
+  deviceLabel: string | null;
 }
 
 export default function Settings() {
@@ -48,6 +50,8 @@ export default function Settings() {
 
   // Sessions
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
+  const [editingDeviceLabel, setEditingDeviceLabel] = useState(false);
+  const [deviceLabelInput, setDeviceLabelInput] = useState("");
 
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,6 +141,19 @@ export default function Settings() {
         navigate("/login");
         return;
       }
+      await refreshSessions();
+    } catch (err) {
+      setError(describeError(err));
+    }
+  }
+
+  async function handleRenameDevice() {
+    const deviceLabel = deviceLabelInput.trim();
+    if (!deviceLabel) return;
+    setError(null);
+    try {
+      await apiPatch("/auth/sessions/current/label", { deviceLabel });
+      setEditingDeviceLabel(false);
       await refreshSessions();
     } catch (err) {
       setError(describeError(err));
@@ -323,21 +340,71 @@ export default function Settings() {
                   className="flex items-center justify-between rounded border border-iron-700 bg-iron-950 p-3 text-sm"
                 >
                   <div>
-                    <p className="text-parchment-100">
-                      {s.current ? "This device" : "Other device"}{" "}
-                      <span className="font-mono text-xs text-ash-400">· trust {s.trustLevel}%</span>
-                    </p>
+                    {s.current && editingDeviceLabel ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={deviceLabelInput}
+                          onChange={(e) => setDeviceLabelInput(e.target.value)}
+                          maxLength={60}
+                          autoFocus
+                          className="rounded border border-iron-700 bg-iron-900 px-2 py-1 text-sm text-parchment-100"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleRenameDevice}
+                          className="text-xs text-parchment-100 underline decoration-iron-600 underline-offset-4"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingDeviceLabel(false)}
+                          className="text-xs text-ash-400 underline decoration-iron-600 underline-offset-4"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-parchment-100">
+                        {s.deviceLabel ?? "Unnamed device"}
+                        <span className="text-xs text-ash-400">
+                          {" "}
+                          ·{" "}
+                          {s.current
+                            ? "this session"
+                            : s.sameDevice
+                              ? "same device, other session"
+                              : "other device"}{" "}
+                          · trust {s.trustLevel}%
+                        </span>
+                      </p>
+                    )}
                     <p className="text-xs text-ash-400">
                       Last verified {new Date(s.lastVerifiedAt).toLocaleString()}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleRevokeSession(s.id)}
-                    className="text-xs text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500"
-                  >
-                    Revoke
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {s.current && !editingDeviceLabel && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeviceLabelInput(s.deviceLabel ?? "");
+                          setEditingDeviceLabel(true);
+                        }}
+                        className="text-xs text-parchment-100 underline decoration-iron-600 underline-offset-4 hover:text-parchment-200"
+                      >
+                        Rename
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRevokeSession(s.id)}
+                      className="text-xs text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500"
+                    >
+                      Revoke
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
