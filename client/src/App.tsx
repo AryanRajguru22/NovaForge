@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Route, Routes, Link } from "react-router-dom";
 import Login from "./pages/Login.js";
 import Settings from "./pages/Settings.js";
@@ -5,6 +6,15 @@ import ApprovalDashboard from "./pages/ApprovalDashboard.js";
 import PolicyManagement from "./pages/PolicyManagement.js";
 import AuditLog from "./pages/AuditLog.js";
 import UserManagement from "./pages/UserManagement.js";
+import { refreshSession } from "./lib/api.js";
+
+// Under the 15-minute access token lifetime so a session gets renewed before
+// it ever has to rely on the reactive 401-retry in lib/api.ts -- and so an
+// idle-but-open tab still "checks back in" periodically, which is what lets
+// Session.trustLevel actually decay/recover the way it's designed to instead
+// of sitting frozen at whatever it was on last login. Safe to run whether or
+// not anyone's logged in: with no refresh cookie the call just no-ops.
+const SESSION_REFRESH_INTERVAL_MS = 4 * 60 * 1000;
 
 function Home() {
   return (
@@ -61,6 +71,12 @@ function Ledger({ index, title, body }: { index: string; title: string; body: st
 }
 
 export default function App() {
+  useEffect(() => {
+    void refreshSession();
+    const interval = setInterval(() => void refreshSession(), SESSION_REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <Routes>
       <Route path="/" element={<Home />} />
