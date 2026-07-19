@@ -10,6 +10,7 @@ import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { requireTrust } from "../middleware/requireTrust.js";
 import { appendAuditLog } from "../lib/audit.js";
 import { QuorumType } from "@prisma/client";
 import { io } from "../app.js";
@@ -137,7 +138,7 @@ const voteSchema = z.object({
 });
 
 // POST /approvals/:id/vote - Submit approval vote with WebAuthn signature
-approvalsRouter.post("/:id/vote", requireAuth, async (req: Request, res: Response) => {
+approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Request, res: Response) => {
   const { id } = req.params;
   const parsed = voteSchema.safeParse(req.body);
   if (!parsed.success) {

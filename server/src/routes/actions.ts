@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { requireTrust } from "../middleware/requireTrust.js";
 import { appendAuditLog } from "../lib/audit.js";
 
 export const actionsRouter = Router();
@@ -14,7 +15,7 @@ const actionCreateSchema = z.object({
 });
 
 // POST /actions - Create a SensitiveAction
-actionsRouter.post("/", requireAuth, async (req: Request, res: Response) => {
+actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: Response) => {
   const parsed = actionCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request data", issues: parsed.error.issues });
