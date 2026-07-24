@@ -7,6 +7,8 @@ import PolicyManagement from "./pages/PolicyManagement.js";
 import AuditLog from "./pages/AuditLog.js";
 import UserManagement from "./pages/UserManagement.js";
 import { refreshSession } from "./lib/api.js";
+import { AuthProvider } from "./lib/auth.js";
+import { ProtectedRoute, PublicOnlyRoute } from "./components/RouteGuards.js";
 
 // Under the 15-minute access token lifetime so a session gets renewed before
 // it ever has to rely on the reactive 401-retry in lib/api.ts -- and so an
@@ -78,14 +80,20 @@ export default function App() {
   }, []);
 
   return (
-    <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/approvals" element={<ApprovalDashboard />} />
-      <Route path="/policies" element={<PolicyManagement />} />
-      <Route path="/audit" element={<AuditLog />} />
-      <Route path="/users" element={<UserManagement />} />
-      <Route path="/settings" element={<Settings />} />
-    </Routes>
+    <AuthProvider>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route element={<PublicOnlyRoute />}>
+          <Route path="/login" element={<Login />} />
+        </Route>
+        <Route element={<ProtectedRoute />}>
+          <Route path="/approvals" element={<ApprovalDashboard />} />
+          <Route path="/policies" element={<PolicyManagement />} />
+          <Route path="/audit" element={<AuditLog />} />
+          <Route path="/users" element={<UserManagement />} />
+          <Route path="/settings" element={<Settings />} />
+        </Route>
+      </Routes>
+    </AuthProvider>
   );
 }

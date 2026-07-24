@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, apiGet } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 interface AuditActor {
   id: string;
@@ -34,6 +35,7 @@ function short(hash: string | null): string {
 
 export default function AuditLog() {
   const navigate = useNavigate();
+  const { user, refresh, logout } = useAuth();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,12 +51,14 @@ export default function AuditLog() {
       setEntries(page.entries);
       setNextCursor(page.nextCursor);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) navigate("/login");
-      else setError(describeError(err));
+      if (err instanceof ApiError && err.status === 401) {
+        await refresh();
+        navigate("/login", { replace: true });
+      } else setError(describeError(err));
     } finally {
       setLoading(false);
     }
-  }, [navigate]);
+  }, [navigate, refresh]);
 
   useEffect(() => {
     void load();
@@ -89,15 +93,21 @@ export default function AuditLog() {
     }
   }
 
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <main className="min-h-screen p-5 sm:p-8">
       <div className="mx-auto max-w-5xl space-y-6">
-        <nav className="ledger-rule flex gap-5 pb-4 text-sm text-ash-400">
+        <nav className="ledger-rule flex flex-wrap items-center gap-x-5 gap-y-1 pb-4 text-sm text-ash-400 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap">
           <Link to="/approvals" className="link-quiet">Approvals</Link>
           <Link to="/policies" className="link-quiet">Policies</Link>
-          <Link to="/audit" className="font-semibold text-parchment-100">Audit log</Link>
-          <Link to="/users" className="link-quiet">Users</Link>
-          <Link to="/settings" className="link-quiet">Security settings</Link>
+          {user?.role === "SUPER_ADMIN" && <Link to="/audit" className="font-semibold text-parchment-100">Audit log</Link>}
+          {user?.role === "SUPER_ADMIN" && <Link to="/users" className="link-quiet">Users</Link>}
+          <Link to="/settings" className="link-quiet">Security Settings</Link>
+          <button type="button" onClick={handleLogout} className="link-quiet">Sign out</button>
         </nav>
 
         <div className="flex flex-wrap items-end justify-between gap-4">

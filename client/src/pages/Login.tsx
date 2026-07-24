@@ -6,6 +6,7 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/types";
 import { apiPost, ApiError } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 type Mode = "login" | "register" | "totp" | "recovery";
 
@@ -18,6 +19,7 @@ interface MeResponse {
 
 export default function Login() {
   const navigate = useNavigate();
+  const { refresh } = useAuth();
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -70,7 +72,8 @@ export default function Login() {
       setStatus("Verifying with server…");
       await apiPost<{ user: MeResponse }>("/auth/login/verify", { email, response });
 
-      navigate("/approvals");
+      await refresh();
+      navigate("/approvals", { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -86,7 +89,8 @@ export default function Login() {
     try {
       setStatus("Verifying code…");
       await apiPost<{ user: MeResponse }>("/auth/login/totp", { email, token: code });
-      navigate("/approvals");
+      await refresh();
+      navigate("/approvals", { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -105,7 +109,8 @@ export default function Login() {
         email,
         code: recoveryCode,
       });
-      navigate("/approvals");
+      await refresh();
+      navigate("/approvals", { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {

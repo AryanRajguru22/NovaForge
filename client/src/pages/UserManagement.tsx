@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, apiGet, apiPatch } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
 const roles: Role[] = ["SUPER_ADMIN", "ADMIN", "SENIOR_APPROVER", "APPROVER", "MEMBER"];
@@ -21,6 +22,7 @@ interface MeResponse {
 
 export default function UserManagement() {
   const navigate = useNavigate();
+  const { user: authUser, refresh, logout } = useAuth();
   const [me, setMe] = useState<MeResponse | null>(null);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,12 +40,14 @@ export default function UserManagement() {
       setMe(meResponse);
       setUsers(usersResponse);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) navigate("/login");
-      else setError(describeError(err));
+      if (err instanceof ApiError && err.status === 401) {
+        await refresh();
+        navigate("/login", { replace: true });
+      } else setError(describeError(err));
     } finally {
       setLoading(false);
     }
-  }, [navigate]);
+  }, [navigate, refresh]);
 
   useEffect(() => {
     void load();
@@ -81,15 +85,21 @@ export default function UserManagement() {
     }
   }
 
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <main className="min-h-screen p-5 sm:p-8">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <nav className="ledger-rule flex items-center gap-5 pb-4 text-sm text-ash-400">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <nav className="ledger-rule flex flex-wrap items-center gap-x-5 gap-y-1 pb-4 text-sm text-ash-400 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap">
           <Link to="/approvals" className="link-quiet">Approvals</Link>
           <Link to="/policies" className="link-quiet">Policies</Link>
-          <Link to="/audit" className="link-quiet">Audit log</Link>
-          <Link to="/users" className="font-semibold text-parchment-100">Users</Link>
-          <Link to="/settings" className="link-quiet">Security settings</Link>
+          {authUser?.role === "SUPER_ADMIN" && <Link to="/audit" className="link-quiet">Audit log</Link>}
+          {authUser?.role === "SUPER_ADMIN" && <Link to="/users" className="font-semibold text-parchment-100">Users</Link>}
+          <Link to="/settings" className="link-quiet">Security Settings</Link>
+          <button type="button" onClick={handleLogout} className="link-quiet">Sign out</button>
         </nav>
 
         <div>

@@ -5,6 +5,7 @@ import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/type
 import { io, type Socket } from "socket.io-client";
 import QRCode from "qrcode";
 import { ApiError, apiGet, apiPost } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 type Status = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
 
@@ -77,6 +78,7 @@ const socketUrl = window.location.hostname === "localhost" ? "http://localhost:4
 
 export default function ApprovalDashboard() {
   const navigate = useNavigate();
+  const { refresh } = useAuth();
   const socketRef = useRef<Socket | null>(null);
 
   const [pendingApprovals, setPendingApprovals] = useState<Approval[]>([]);
@@ -209,14 +211,15 @@ export default function ApprovalDashboard() {
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        navigate("/login");
+        await refresh();
+        navigate("/login", { replace: true });
       } else {
         setError(describeError(err));
       }
     } finally {
       setLoading(false);
     }
-  }, [navigate]);
+  }, [navigate, refresh]);
 
   const refreshData = useCallback(async () => {
     try {
@@ -376,8 +379,13 @@ export default function ApprovalDashboard() {
       );
       void refreshData();
     } catch (err) {
-      setError(describeError(err));
-      setStatus(null);
+      if (err instanceof ApiError && err.status === 401) {
+        await refresh();
+        navigate("/login", { replace: true });
+      } else {
+        setError(describeError(err));
+        setStatus(null);
+      }
     } finally {
       setVoting(null);
     }
@@ -418,7 +426,12 @@ export default function ApprovalDashboard() {
       setSelectedId(created.action.id);
       await loadData();
     } catch (err) {
-      setCreateError(describeError(err));
+      if (err instanceof ApiError && err.status === 401) {
+        await refresh();
+        navigate("/login", { replace: true });
+      } else {
+        setCreateError(describeError(err));
+      }
     } finally {
       setCreating(false);
     }
@@ -762,25 +775,40 @@ export default function ApprovalDashboard() {
 }
 
 function PageFrame({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <main className="min-h-screen p-5 sm:p-8">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <nav className="ledger-rule flex items-center gap-5 pb-4 text-sm text-ash-400">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <nav className="ledger-rule flex flex-wrap items-center gap-x-5 gap-y-1 pb-4 text-sm text-ash-400 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap">
           <Link to="/approvals" className="font-semibold text-parchment-100">
             Approvals
           </Link>
           <Link to="/policies" className="link-quiet">
             Policies
           </Link>
-          <Link to="/audit" className="link-quiet">
-            Audit log
-          </Link>
-          <Link to="/users" className="link-quiet">
-            Users
-          </Link>
+          {user?.role === "SUPER_ADMIN" && (
+            <Link to="/audit" className="link-quiet">
+              Audit log
+            </Link>
+          )}
+          {user?.role === "SUPER_ADMIN" && (
+            <Link to="/users" className="link-quiet">
+              Users
+            </Link>
+          )}
           <Link to="/settings" className="link-quiet">
             Security Settings
           </Link>
+          <button type="button" onClick={handleLogout} className="link-quiet">
+            Sign out
+          </button>
         </nav>
         {children}
       </div>

@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { startAuthentication } from "@simplewebauthn/browser";
 import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/types";
 import { apiGet, apiPost, apiDelete, apiPatch, ApiError } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 interface MeResponse {
   id: string;
@@ -38,6 +39,7 @@ interface SessionInfo {
 
 export default function Settings() {
   const navigate = useNavigate();
+  const { user: authUser, refresh, logout } = useAuth();
   const [user, setUser] = useState<MeResponse | null>(null);
 
   // TOTP enrollment
@@ -67,7 +69,8 @@ export default function Settings() {
     try {
       setUser(await apiGet<MeResponse>("/auth/me"));
     } catch {
-      navigate("/login");
+      await refresh();
+      navigate("/login", { replace: true });
     }
   }
 
@@ -138,13 +141,19 @@ export default function Settings() {
     try {
       await apiDelete(`/auth/sessions/${id}`);
       if (sessions?.find((s) => s.id === id)?.current) {
-        navigate("/login");
+        await refresh();
+        navigate("/login", { replace: true });
         return;
       }
       await refreshSessions();
     } catch (err) {
       setError(describeError(err));
     }
+  }
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
   }
 
   async function handleRenameDevice() {
@@ -183,23 +192,30 @@ export default function Settings() {
 
   return (
     <div className="min-h-screen px-6 py-8">
-      <div className="mx-auto max-w-md space-y-6">
-        <nav className="ledger-rule flex items-center gap-5 pb-4 text-sm text-ash-400">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <nav className="ledger-rule flex flex-wrap items-center gap-x-5 gap-y-1 pb-4 text-sm text-ash-400 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap">
           <Link to="/approvals" className="link-quiet">
             Approvals
           </Link>
           <Link to="/policies" className="link-quiet">
             Policies
           </Link>
-          <Link to="/audit" className="link-quiet">
-            Audit log
-          </Link>
-          <Link to="/users" className="link-quiet">
-            Users
-          </Link>
+          {authUser?.role === "SUPER_ADMIN" && (
+            <Link to="/audit" className="link-quiet">
+              Audit log
+            </Link>
+          )}
+          {authUser?.role === "SUPER_ADMIN" && (
+            <Link to="/users" className="link-quiet">
+              Users
+            </Link>
+          )}
           <Link to="/settings" className="font-semibold text-parchment-100">
             Security Settings
           </Link>
+          <button type="button" onClick={handleLogout} className="link-quiet">
+            Sign out
+          </button>
         </nav>
         <div>
           <p className="eyebrow">Account</p>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, apiDelete, apiGet, apiPost, apiPut } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
 type QuorumType = "N_OF_M" | "ROLE_BASED" | "WEIGHTED";
@@ -11,6 +12,7 @@ const blankForm: FormState = { actionType: "", quorumType: "N_OF_M", minApproval
 
 export default function PolicyManagement() {
   const navigate = useNavigate();
+  const { user, refresh, logout } = useAuth();
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [form, setForm] = useState<FormState>(blankForm);
   const [editing, setEditing] = useState<Policy | null>(null);
@@ -22,9 +24,9 @@ export default function PolicyManagement() {
   const load = useCallback(async () => {
     setError(null);
     try { setPolicies(await apiGet<Policy[]>("/policies")); }
-    catch (err) { if (err instanceof ApiError && err.status === 401) navigate("/login"); else setError(describeError(err)); }
+    catch (err) { if (err instanceof ApiError && err.status === 401) { await refresh(); navigate("/login", { replace: true }); } else setError(describeError(err)); }
     finally { setLoading(false); }
-  }, [navigate]);
+  }, [navigate, refresh]);
   useEffect(() => { void load(); }, [load]);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) { setForm((current) => ({ ...current, [key]: value })); }
@@ -43,15 +45,21 @@ export default function PolicyManagement() {
     catch (err) { setError(describeError(err)); } finally { setBusy(false); }
   }
 
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <main className="min-h-screen p-5 sm:p-8">
       <div className="mx-auto max-w-5xl space-y-6">
-        <nav className="ledger-rule flex gap-5 pb-4 text-sm text-ash-400">
+        <nav className="ledger-rule flex flex-wrap items-center gap-x-5 gap-y-1 pb-4 text-sm text-ash-400 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap">
           <Link to="/approvals" className="link-quiet">Approvals</Link>
           <Link to="/policies" className="font-semibold text-parchment-100">Policies</Link>
-          <Link to="/audit" className="link-quiet">Audit log</Link>
-          <Link to="/users" className="link-quiet">Users</Link>
-          <Link to="/settings" className="link-quiet">Security settings</Link>
+          {user?.role === "SUPER_ADMIN" && <Link to="/audit" className="link-quiet">Audit log</Link>}
+          {user?.role === "SUPER_ADMIN" && <Link to="/users" className="link-quiet">Users</Link>}
+          <Link to="/settings" className="link-quiet">Security Settings</Link>
+          <button type="button" onClick={handleLogout} className="link-quiet">Sign out</button>
         </nav>
         <div>
           <p className="eyebrow">Governance</p>
