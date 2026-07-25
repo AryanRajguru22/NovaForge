@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ApiError, apiGet, apiPatch } from "../lib/api.js";
+import { ApiError, apiDelete, apiGet, apiPatch } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
@@ -27,6 +27,8 @@ export default function UserManagement() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -90,6 +92,22 @@ export default function UserManagement() {
     navigate("/login", { replace: true });
   }
 
+  async function deleteUser(user: UserRow) {
+    setError(null);
+    setStatus(null);
+    setDeletingId(user.id);
+    try {
+      await apiDelete(`/users/${user.id}`);
+      setUsers((current) => current.filter((u) => u.id !== user.id));
+      setStatus(`${user.name} was deleted.`);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setDeletingId(null);
+      setConfirmingId(null);
+    }
+  }
+
   return (
     <main className="min-h-screen p-5 sm:p-8">
       <div className="mx-auto max-w-5xl space-y-6">
@@ -133,6 +151,7 @@ export default function UserManagement() {
                     <th className="p-3 font-normal">Email</th>
                     <th className="p-3 font-normal">Role</th>
                     <th className="p-3 font-normal">Vote weight</th>
+                    <th className="p-3 font-normal"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -167,6 +186,36 @@ export default function UserManagement() {
                           onChange={(e) => changeWeight(user, Number(e.target.value))}
                           className="w-16 rounded border border-iron-700 bg-iron-950 px-2 py-1 text-sm text-parchment-100"
                         />
+                      </td>
+                      <td className="p-3 text-right">
+                        {me?.id === user.id ? null : confirmingId === user.id ? (
+                          <span className="inline-flex items-center gap-2">
+                            <span className="text-xs text-ash-400">Delete permanently?</span>
+                            <button
+                              type="button"
+                              onClick={() => deleteUser(user)}
+                              disabled={deletingId === user.id}
+                              className="text-xs text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500"
+                            >
+                              {deletingId === user.id ? "Deleting…" : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingId(null)}
+                              className="text-xs text-ash-400 underline decoration-iron-600 underline-offset-4"
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingId(user.id)}
+                            className="text-xs text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500"
+                          >
+                            Delete
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}

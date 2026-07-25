@@ -1,9 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import { Prisma, Role } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { appendAuditLog } from "../lib/audit.js";
-import { Role } from "@prisma/client";
 
 export const usersRouter = Router();
 
@@ -119,4 +119,57 @@ usersRouter.patch("/:id/weight", requireAuth, requireSuperAdmin, async (req, res
   });
 
   res.json({ id: updated.id, voteWeight: updated.voteWeight });
+});
+
+// Deleting a user is only safe once their approval-history rows are gone:
+// SensitiveAction.requestedBy and ApprovalVote.approver are both
+// ON DELETE RESTRICT (unlike AuditLog.actorId, which is SET NULL) -- that's
+// deliberate, so a delete can never silently erase who requested or approved
+// something. Credential/Session are also RESTRICT but are just device data,
+// so those are cleared first in the same transaction.
+usersRouter.delete("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
+  const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  if (target.id === req.user!.id) {
+    res.status(400).json({ error: "Cannot delete your own account while signed in" });
+    return;
+  }
+
+  if (target.role === Role.SUPER_ADMIN) {
+    const remaining = await prisma.user.count({ where: { role: Role.SUPER_ADMIN } });
+    if (remaining <= 1) {
+      res.status(400).json({ error: "Cannot delete the last super admin" });
+      return;
+    }
+  }
+
+  try {
+    await prisma.$transaction([
+      prisma.credential.deleteMany({ where: { userId: target.id } }),
+      prisma.session.deleteMany({ where: { userId: target.id } }),
+      prisma.user.delete({ where: { id: target.id } }),
+    ]);
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      res.status(409).json({
+        error: "Cannot delete a user with existing sensitive actions or votes on record",
+      });
+      return;
+    }
+    throw err;
+  }
+
+  await appendAuditLog({
+    entityType: "User",
+    entityId: target.id,
+    event: "USER_DELETED",
+    actorId: req.user!.id,
+    metadata: { email: target.email, name: target.name, role: target.role },
+  });
+
+  res.status(204).end();
 });
