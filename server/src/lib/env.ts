@@ -17,6 +17,7 @@ export const env = {
   databaseUrl: required("DATABASE_URL"),
   jwtAccessSecret: required("JWT_ACCESS_SECRET"),
   jwtRefreshSecret: required("JWT_REFRESH_SECRET"),
+  totpEncryptionKey: required("TOTP_ENCRYPTION_KEY"),
   rpId: process.env.RP_ID ?? (renderExternalUrl ? new URL(renderExternalUrl).hostname : "localhost"),
   rpName: process.env.RP_NAME ?? "NovaForge",
   rpOrigin: process.env.RP_ORIGIN ?? renderExternalUrl ?? "http://localhost:5173",

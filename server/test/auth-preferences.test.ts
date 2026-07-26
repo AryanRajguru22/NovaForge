@@ -3,6 +3,7 @@ import { authenticator } from "otplib";
 import { startTestServer, stopTestServer, apiRequest, cleanupUsers, runSuffix } from "./testServer.js";
 import { prisma } from "../src/lib/prisma.js";
 import { hashSecret } from "../src/lib/hash.js";
+import { encryptTotpSecret } from "../src/lib/totpSecretCrypto.js";
 import { signAccessToken } from "../src/lib/jwt.js";
 
 describe("user-controlled login-method preferences", () => {
@@ -21,7 +22,7 @@ describe("user-controlled login-method preferences", () => {
 
     totpSecret = authenticator.generateSecret();
     await prisma.credential.create({
-      data: { userId, type: "TOTP", secret: totpSecret, deviceLabel: "authenticator" },
+      data: { userId, type: "TOTP", secret: encryptTotpSecret(totpSecret), deviceLabel: "authenticator" },
     });
     await prisma.credential.create({
       data: { userId, type: "RECOVERY_CODE", secret: hashSecret(recoveryCode) },

@@ -16,6 +16,7 @@ import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../lib/jwt.js";
 import { hashSecret, verifySecret } from "../lib/hash.js";
 import { checkTotpWithTolerance } from "../lib/totp.js";
+import { encryptTotpSecret, decryptTotpSecret } from "../lib/totpSecretCrypto.js";
 import { appendAuditLog } from "../lib/audit.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
@@ -323,7 +324,7 @@ authRouter.post("/totp/verify", requireAuth, async (req, res) => {
       data: {
         userId: req.user!.id,
         type: "TOTP",
-        secret,
+        secret: encryptTotpSecret(secret),
         deviceLabel: "Authenticator app",
       },
     }),
@@ -364,7 +365,18 @@ authRouter.post("/login/totp", loginAttemptLimit, async (req, res) => {
     return;
   }
 
-  if (!checkTotpWithTolerance(token, totpCredential.secret)) {
+  let decryptedSecret: string;
+  try {
+    decryptedSecret = decryptTotpSecret(totpCredential.secret);
+  } catch {
+    // A malformed/corrupt stored secret should fail the same way a wrong
+    // code does, not crash the request -- there's no legitimate submitted
+    // code that could ever satisfy a credential we can't decrypt anyway.
+    res.status(400).json({ error: "Invalid code" });
+    return;
+  }
+
+  if (!checkTotpWithTolerance(token, decryptedSecret)) {
     res.status(400).json({ error: "Invalid code" });
     return;
   }

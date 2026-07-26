@@ -28,6 +28,8 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
+      - key: TOTP_ENCRYPTION_KEY
+        generateValue: true
       - key: RP_NAME
         value: NovaForge
       - key: NODE_ENV
