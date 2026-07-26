@@ -35,10 +35,13 @@ interface RequestResult<T = any> {
 
 export async function apiRequest<T = any>(
   path: string,
-  options: { method?: string; token?: string; body?: object } = {},
+  options: { method?: string; token?: string; refreshToken?: string; body?: object } = {},
 ): Promise<RequestResult<T>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (options.token) headers.Cookie = `accessToken=${options.token}`;
+  const cookies: string[] = [];
+  if (options.token) cookies.push(`accessToken=${options.token}`);
+  if (options.refreshToken) cookies.push(`refreshToken=${options.refreshToken}`);
+  if (cookies.length > 0) headers.Cookie = cookies.join("; ");
 
   const res = await fetch(`${baseUrl}${path}`, {
     method: options.method ?? "GET",

@@ -604,8 +604,30 @@ authRouter.post("/session/refresh", async (req, res) => {
   // Trust decays the longer a session goes without re-verifying with the server —
   // e.g. a device offline on poor connectivity. Callers should gate sensitive
   // actions on trustLevel rather than mere session validity.
+  //
+  // This endpoint is called automatically every few minutes by an open tab
+  // (client/src/App.tsx) purely to keep the access token fresh — no user
+  // interaction proves anyone is actually present. Recomputing trust from
+  // scratch as "100 minus decay since last call" on every one of those silent
+  // pings meant lastVerifiedAt reset to now() each time, so the very next
+  // automatic ping (minutes later) always saw a tiny gap and snapped trust
+  // straight back to 100 — even one call after a genuine multi-hour outage
+  // legitimately reported the decayed value once, only to have it instantly
+  // erased. A stolen-but-still-networked device would therefore sit at full
+  // trust forever, since mere network reachability was being treated as
+  // equivalent to a real re-verification. Recovery now happens at the same
+  // rate trust decays (a flat amount per check-in, capped at 100) instead of
+  // jumping to full trust in one shot, so climbing back out of a real outage
+  // takes several genuine check-ins over real time, the same way falling into
+  // one took real hours of silence.
+  const DECAY_RATE_PER_HOUR = 5;
+  const RECOVERY_PER_CHECKIN = 5;
   const hoursSinceVerified = (Date.now() - session.lastVerifiedAt.getTime()) / 3_600_000;
-  const trustLevel = Math.max(0, 100 - Math.floor(hoursSinceVerified) * 5);
+  const decayedTrust = Math.max(0, session.trustLevel - DECAY_RATE_PER_HOUR * hoursSinceVerified);
+  // Session.trustLevel is an Int column -- round explicitly rather than
+  // letting Postgres truncate a fractional value silently, so the number
+  // returned in this response always matches exactly what gets persisted.
+  const trustLevel = Math.round(Math.min(100, decayedTrust + RECOVERY_PER_CHECKIN));
 
   await prisma.session.update({
     where: { id: session.id },
