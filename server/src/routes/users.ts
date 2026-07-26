@@ -7,6 +7,24 @@ import { appendAuditLog } from "../lib/audit.js";
 
 export const usersRouter = Router();
 
+// Deleting a user whose SensitiveAction/ApprovalVote rows still reference
+// them should always surface as this specific, anticipated 409 -- but Prisma
+// doesn't reliably wrap this failure as PrismaClientKnownRequestError/P2003.
+// Inside a $transaction array batch, a RESTRICT violation from Postgres can
+// instead come back as PrismaClientUnknownRequestError, carrying the raw
+// connector error (SQLSTATE 23503 foreign_key_violation, or 23001
+// restrict_violation for a plain RESTRICT constraint like this one) only in
+// its message text, not as a structured field. Checking both the known-error
+// code and the raw SQLSTATE in the message covers whichever shape Prisma
+// actually produces, since previously only the P2003 case was handled and
+// the other fell through to an uncaught throw that crashed the whole server
+// process, not just this one request.
+function isForeignKeyRestrictionError(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") return true;
+  if (err instanceof Error && /\b(23503|23001)\b/.test(err.message)) return true;
+  return false;
+}
+
 async function requireSuperAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!req.user) {
     res.status(401).json({ error: "Not authenticated" });
@@ -154,7 +172,7 @@ usersRouter.delete("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
       prisma.user.delete({ where: { id: target.id } }),
     ]);
   } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+    if (isForeignKeyRestrictionError(err)) {
       res.status(409).json({
         error: "Cannot delete a user with existing sensitive actions or votes on record",
       });

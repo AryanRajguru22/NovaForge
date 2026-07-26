@@ -3,6 +3,15 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import express from "express";
+// Must be imported before any router is created: it patches Express 4's
+// Router so a rejected/thrown promise inside an async route handler is
+// forwarded to the error-handling middleware below instead of becoming an
+// unhandled rejection that crashes the whole process. Express 4 has no
+// native support for this (Express 5 does) -- without it, any single
+// uncaught error in any route takes down the entire server for every
+// connected user, not just the one request that hit it, until Render
+// notices the crash and restarts the container.
+import "express-async-errors";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { Server as SocketIOServer } from "socket.io";
@@ -70,6 +79,20 @@ if (clientDistExists) {
     res.sendFile(path.join(clientDistPath, "index.html"));
   });
 }
+
+// Last-resort safety net: any error a route didn't explicitly handle (now
+// including ones thrown/rejected inside an async handler, forwarded here by
+// express-async-errors above) ends this one request with a generic 500
+// instead of crashing the process and taking down every other in-flight
+// request too. Must be registered after every other app.use/route -- Express
+// only recognizes a 4-argument function as error-handling middleware, and
+// only errors passed to routes registered *before* this point ever reach it.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[unhandled route error]", err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Internal server error" });
+});
 
 export const httpServer = http.createServer(app);
 
