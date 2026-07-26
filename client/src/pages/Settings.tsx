@@ -303,6 +303,13 @@ export default function Settings() {
                   <span key={c}>{c}</span>
                 ))}
               </div>
+              <button
+                type="button"
+                onClick={() => downloadRecoveryCodes(recoveryCodes)}
+                className="rounded border border-iron-700 bg-iron-950 px-3 py-1.5 text-xs font-medium text-ash-300 hover:bg-iron-800 transition-colors"
+              >
+                Download codes (.txt)
+              </button>
             </div>
           )}
         </div>
@@ -475,6 +482,30 @@ function LoginMethodToggle({
       </button>
     </div>
   );
+}
+
+// Codes are already fully visible on screen at this point (they only ever
+// exist in plaintext for this one response, per the server's design) -- this
+// just persists what the user can already see into a file instead of relying
+// on them to manually copy 10 codes down somewhere durable themselves.
+function downloadRecoveryCodes(codes: string[]): void {
+  const content = [
+    "NovaForge recovery codes",
+    "Each code signs you in once if your passkey and authenticator app are both unavailable.",
+    "Generating new codes invalidates all of these.",
+    "",
+    ...codes,
+    "",
+  ].join("\n");
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "novaforge-recovery-codes.txt";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function describeError(err: unknown): string {
