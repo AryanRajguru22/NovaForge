@@ -13,6 +13,7 @@ const blankForm: FormState = { actionType: "", quorumType: "N_OF_M", minApproval
 export default function PolicyManagement() {
   const navigate = useNavigate();
   const { user, refresh, logout } = useAuth();
+  const canManage = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [form, setForm] = useState<FormState>(blankForm);
   const [editing, setEditing] = useState<Policy | null>(null);
@@ -68,7 +69,7 @@ export default function PolicyManagement() {
         </div>
         {error && <Message error>{error}</Message>}
         {status && <Message>{status}</Message>}
-        <div className="grid gap-6 lg:grid-cols-[1.15fr_.85fr]">
+        <div className={`grid gap-6 ${canManage ? "lg:grid-cols-[1.15fr_.85fr]" : ""}`}>
           <section className="ledger-card">
             <div className="ledger-rule border-t-0 border-b border-solid p-5">
               <h2 className="font-display text-lg text-parchment-100">Configured policies</h2>
@@ -95,83 +96,87 @@ export default function PolicyManagement() {
                           {policy.eligibleRoles.map((role) => role.replace(/_/g, " ")).join(", ")}
                         </p>
                       </div>
-                      <div className="flex gap-3 text-sm">
-                        <button type="button" onClick={() => beginEdit(policy)} className="link-quiet">Edit</button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void remove(policy)}
-                          className="text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500 disabled:opacity-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      {canManage && (
+                        <div className="flex gap-3 text-sm">
+                          <button type="button" onClick={() => beginEdit(policy)} className="link-quiet">Edit</button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void remove(policy)}
+                            className="text-rust-400 underline decoration-iron-600 underline-offset-4 hover:text-rust-500 disabled:opacity-50"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </li>
                 ))}
               </ul>
             )}
           </section>
-          <section className="ledger-card p-5">
-            <div className="flex justify-between gap-3">
-              <div>
-                <h2 className="font-display text-lg text-parchment-100">{editing ? "Edit policy" : "Create policy"}</h2>
-                <p className="font-serif mt-1 text-sm text-ash-400">Policy changes require an administrator account.</p>
-              </div>
-              {editing && <button type="button" onClick={reset} className="link-quiet text-sm">Cancel</button>}
-            </div>
-            <form onSubmit={submit} className="mt-5 space-y-4">
-              <Field label="Action type">
-                <input required value={form.actionType} onChange={(event) => update("actionType", event.target.value)} className="input" placeholder="TRANSFER_FUNDS" />
-              </Field>
-              <Field label="Quorum type">
-                <select value={form.quorumType} onChange={(event) => update("quorumType", event.target.value as QuorumType)} className="input">
-                  <option value="N_OF_M">N of M</option>
-                  <option value="ROLE_BASED">Role based</option>
-                  <option value="WEIGHTED">Weighted</option>
-                </select>
-              </Field>
-              <Field label={form.quorumType === "WEIGHTED" ? "Weight threshold" : "Minimum approvals"}>
-                <input required min="0" type="number" value={form.minApprovals} onChange={(event) => update("minApprovals", Number(event.target.value))} className="input" />
-                {form.quorumType === "WEIGHTED" && (
-                  <span className="mt-1 block text-xs text-ash-400">
-                    Sum of approving voters' vote weights (set per account on the Users page) must
-                    reach this number.
-                  </span>
-                )}
-              </Field>
-              <fieldset>
-                <legend className="mb-2 text-sm text-ash-300">Eligible roles</legend>
-                <div className="grid grid-cols-2 gap-2">
-                  {roles.map((role) => (
-                    <label key={role} className="flex items-center gap-2 text-sm text-ash-300">
-                      <input
-                        type="checkbox"
-                        checked={form.eligibleRoles.includes(role)}
-                        onChange={(event) => update("eligibleRoles", event.target.checked ? [...form.eligibleRoles, role] : form.eligibleRoles.filter((item) => item !== role))}
-                        className="accent-ember-500"
-                      />
-                      {role.replace(/_/g, " ")}
-                    </label>
-                  ))}
+          {canManage && (
+            <section className="ledger-card p-5">
+              <div className="flex justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-lg text-parchment-100">{editing ? "Edit policy" : "Create policy"}</h2>
+                  <p className="font-serif mt-1 text-sm text-ash-400">Policy changes require an administrator account.</p>
                 </div>
-              </fieldset>
-              <Field label="Fallback policy">
-                <select value={form.fallbackPolicyId} onChange={(event) => update("fallbackPolicyId", event.target.value)} className="input">
-                  <option value="">None — expire at timeout</option>
-                  {policies.filter((policy) => policy.id !== editing?.id).map((policy) => (
-                    <option key={policy.id} value={policy.id}>{policy.actionType}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Escalation timeout (seconds)">
-                <input required min="1" type="number" value={form.escalationTimeoutSec} onChange={(event) => update("escalationTimeoutSec", Number(event.target.value))} className="input" />
-              </Field>
-              <button disabled={busy || form.eligibleRoles.length === 0} className="btn-primary w-full">
-                {busy ? "Saving…" : editing ? "Save policy" : "Create policy"}
-              </button>
-            </form>
-          </section>
+                {editing && <button type="button" onClick={reset} className="link-quiet text-sm">Cancel</button>}
+              </div>
+              <form onSubmit={submit} className="mt-5 space-y-4">
+                <Field label="Action type">
+                  <input required value={form.actionType} onChange={(event) => update("actionType", event.target.value)} className="input" placeholder="TRANSFER_FUNDS" />
+                </Field>
+                <Field label="Quorum type">
+                  <select value={form.quorumType} onChange={(event) => update("quorumType", event.target.value as QuorumType)} className="input">
+                    <option value="N_OF_M">N of M</option>
+                    <option value="ROLE_BASED">Role based</option>
+                    <option value="WEIGHTED">Weighted</option>
+                  </select>
+                </Field>
+                <Field label={form.quorumType === "WEIGHTED" ? "Weight threshold" : "Minimum approvals"}>
+                  <input required min="0" type="number" value={form.minApprovals} onChange={(event) => update("minApprovals", Number(event.target.value))} className="input" />
+                  {form.quorumType === "WEIGHTED" && (
+                    <span className="mt-1 block text-xs text-ash-400">
+                      Sum of approving voters' vote weights (set per account on the Users page) must
+                      reach this number.
+                    </span>
+                  )}
+                </Field>
+                <fieldset>
+                  <legend className="mb-2 text-sm text-ash-300">Eligible roles</legend>
+                  <div className="grid grid-cols-2 gap-2">
+                    {roles.map((role) => (
+                      <label key={role} className="flex items-center gap-2 text-sm text-ash-300">
+                        <input
+                          type="checkbox"
+                          checked={form.eligibleRoles.includes(role)}
+                          onChange={(event) => update("eligibleRoles", event.target.checked ? [...form.eligibleRoles, role] : form.eligibleRoles.filter((item) => item !== role))}
+                          className="accent-ember-500"
+                        />
+                        {role.replace(/_/g, " ")}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <Field label="Fallback policy">
+                  <select value={form.fallbackPolicyId} onChange={(event) => update("fallbackPolicyId", event.target.value)} className="input">
+                    <option value="">None — expire at timeout</option>
+                    {policies.filter((policy) => policy.id !== editing?.id).map((policy) => (
+                      <option key={policy.id} value={policy.id}>{policy.actionType}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Escalation timeout (seconds)">
+                  <input required min="1" type="number" value={form.escalationTimeoutSec} onChange={(event) => update("escalationTimeoutSec", Number(event.target.value))} className="input" />
+                </Field>
+                <button disabled={busy || form.eligibleRoles.length === 0} className="btn-primary w-full">
+                  {busy ? "Saving…" : editing ? "Save policy" : "Create policy"}
+                </button>
+              </form>
+            </section>
+          )}
         </div>
       </div>
     </main>
