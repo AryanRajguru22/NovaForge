@@ -295,7 +295,37 @@ authRouter.post("/totp/setup", requireAuth, async (req, res) => {
   res.json({ secret, otpauthUrl });
 });
 
-const totpVerifySchema = z.object({ token: z.string().trim().length(6) });
+// Enrolling TOTP writes a brand-new, fully independent login path (just
+// like minting recovery codes) and, on re-enrollment, deletes whatever TOTP
+// credential the real user already had -- so a stolen session cookie alone
+// must not be enough to install it. This mirrors the recovery-codes
+// options/generate step-up gate: a fresh passkey signature is required
+// immediately before the write, not just a valid session.
+authRouter.post("/totp/verify/options", requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    include: { credentials: true },
+  });
+  const passkeys = user?.credentials.filter((c) => c.type === "PASSKEY" && c.credentialId) ?? [];
+  if (!user || passkeys.length === 0) {
+    res.status(400).json({ error: "No passkeys registered for this account" });
+    return;
+  }
+
+  const options = await generateAuthenticationOptions({
+    rpID: env.rpId,
+    userVerification: "preferred",
+    allowCredentials: passkeys.map((c) => ({ id: c.credentialId! })),
+  });
+
+  setChallenge(`totp-verify:${user.id}`, options.challenge);
+  res.json(options);
+});
+
+const totpVerifySchema = z.object({
+  token: z.string().trim().length(6),
+  response: z.custom<AuthenticationResponseJSON>((v) => typeof v === "object" && v !== null),
+});
 
 authRouter.post("/totp/verify", requireAuth, async (req, res) => {
   const parsed = totpVerifySchema.safeParse(req.body);
@@ -303,6 +333,7 @@ authRouter.post("/totp/verify", requireAuth, async (req, res) => {
     res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
     return;
   }
+  const { token, response } = parsed.data;
 
   const secret = takeChallenge(`totp-setup:${req.user!.id}`);
   if (!secret) {
@@ -310,7 +341,57 @@ authRouter.post("/totp/verify", requireAuth, async (req, res) => {
     return;
   }
 
-  if (!checkTotpWithTolerance(parsed.data.token, secret)) {
+  const expectedChallenge = takeChallenge(`totp-verify:${req.user!.id}`);
+  if (!expectedChallenge) {
+    res.status(400).json({ error: "Passkey confirmation expired, please try again" });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    include: { credentials: true },
+  });
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const credential = user.credentials.find(
+    (c) => c.type === "PASSKEY" && c.credentialId === response.id,
+  );
+  if (!credential || !credential.publicKey || !credential.credentialId) {
+    res.status(400).json({ error: "Unknown credential" });
+    return;
+  }
+
+  let verification;
+  try {
+    if (process.env.NODE_ENV === "test" && process.env.BYPASS_WEBAUTHN === "true") {
+      verification = { verified: true, authenticationInfo: { newCounter: Number(credential.counter) + 1 } };
+    } else {
+      verification = await verifyAuthenticationResponse({
+        response,
+        expectedChallenge,
+        expectedOrigin: env.rpOrigin,
+        expectedRPID: env.rpId,
+        authenticator: {
+          credentialID: credential.credentialId,
+          credentialPublicKey: isoBase64URL.toBuffer(credential.publicKey),
+          counter: Number(credential.counter),
+        },
+      });
+    }
+  } catch {
+    res.status(400).json({ error: "Passkey verification failed" });
+    return;
+  }
+
+  if (!verification.verified) {
+    res.status(400).json({ error: "Passkey verification failed" });
+    return;
+  }
+
+  if (!checkTotpWithTolerance(token, secret)) {
     res.status(400).json({ error: "Invalid code" });
     return;
   }
@@ -327,6 +408,10 @@ authRouter.post("/totp/verify", requireAuth, async (req, res) => {
         secret: encryptTotpSecret(secret),
         deviceLabel: "Authenticator app",
       },
+    }),
+    prisma.credential.update({
+      where: { id: credential.id },
+      data: { counter: BigInt(verification.authenticationInfo.newCounter), lastUsedAt: new Date() },
     }),
   ]);
 

@@ -102,7 +102,14 @@ export default function Settings() {
     setError(null);
     setBusy(true);
     try {
-      await apiPost("/auth/totp/verify", { token: code });
+      setStatus("Requesting passkey confirmation…");
+      const options = await apiPost<PublicKeyCredentialRequestOptionsJSON>("/auth/totp/verify/options", {});
+
+      setStatus("Confirm with your passkey…");
+      const response = await startAuthentication(options);
+
+      setStatus("Verifying code…");
+      await apiPost("/auth/totp/verify", { token: code, response });
       await refreshUser();
       setPendingSetup(null);
       setQrDataUrl(null);
