@@ -50,7 +50,7 @@ export async function appendAuditLog(entry: {
   const hash = computeHash(prevHash, entry);
 
   return prisma.auditLog.create({
-    data: { ...entry, prevHash, hash },
+    data: { ...entry, actorIdAtWrite: entry.actorId ?? null, prevHash, hash },
   });
 }
 
@@ -63,7 +63,7 @@ export async function verifyAuditChain(): Promise<{ valid: boolean; brokenAt?: s
       entityType: row.entityType,
       entityId: row.entityId,
       event: row.event,
-      actorId: row.actorId ?? undefined,
+      actorId: row.actorIdAtWrite ?? undefined,
       metadata: row.metadata ?? undefined,
     });
     if (expected !== row.hash) return { valid: false, brokenAt: row.id };

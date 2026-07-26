@@ -146,6 +146,13 @@ model AuditLog {
   event      String
   actorId    String?
   actor      User?    @relation(fields: [actorId], references: [id])
+  // Frozen copy of actorId at write time, with no foreign key. actorId is
+  // ON DELETE SET NULL so joins/display stay tidy after a user is deleted,
+  // but that means actorId is not safe to hash: deleting a user would
+  // silently mutate every historical row they ever acted on, breaking the
+  // hash chain for an event that isn't tampering. actorIdAtWrite is what
+  // the hash actually covers, and nothing ever updates it after insert.
+  actorIdAtWrite String?
   metadata   Json?
   timestamp  DateTime @default(now())
   prevHash   String?
