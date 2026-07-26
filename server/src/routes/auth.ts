@@ -15,6 +15,7 @@ import { env } from "../lib/env.js";
 import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../lib/jwt.js";
 import { hashSecret, verifySecret } from "../lib/hash.js";
+import { checkTotpWithTolerance } from "../lib/totp.js";
 import { appendAuditLog } from "../lib/audit.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
@@ -308,7 +309,7 @@ authRouter.post("/totp/verify", requireAuth, async (req, res) => {
     return;
   }
 
-  if (!authenticator.check(parsed.data.token, secret)) {
+  if (!checkTotpWithTolerance(parsed.data.token, secret)) {
     res.status(400).json({ error: "Invalid code" });
     return;
   }
@@ -363,7 +364,7 @@ authRouter.post("/login/totp", loginAttemptLimit, async (req, res) => {
     return;
   }
 
-  if (!authenticator.check(token, totpCredential.secret)) {
+  if (!checkTotpWithTolerance(token, totpCredential.secret)) {
     res.status(400).json({ error: "Invalid code" });
     return;
   }
