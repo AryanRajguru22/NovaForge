@@ -136,6 +136,13 @@ model ApprovalVote {
   deviceId   String
   timestamp  DateTime        @default(now())
 
+  // An approver may cast at most one vote per approval request. This used to
+  // be enforced only by an application-level findFirst-then-create check
+  // (server/src/routes/approvals.ts), which is race-prone under concurrent
+  // requests -- two requests can both pass the check before either commits.
+  // The database is the authoritative guard; the application check remains
+  // only as a fast-path/UX check that returns a friendlier error sooner.
+  @@unique([requestId, approverId])
   @@index([requestId])
 }
 

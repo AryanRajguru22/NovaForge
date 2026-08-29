@@ -10,6 +10,7 @@ import {
   runSuffix,
 } from "./testServer.js";
 import { prisma } from "../src/lib/prisma.js";
+import { Prisma } from "@prisma/client";
 
 function mockVoteResponse(credentialId: string, signature: string) {
   return {
@@ -133,6 +134,83 @@ describe("approval voting and quorum resolution", () => {
     const dup = await castVote(requestId, approver1, "APPROVE", "sig-b");
     expect(dup.status).toBe(400);
     expect(dup.data.error).toMatch(/already voted/);
+  });
+
+  // Regression coverage for P0-1: ApprovalVote.requestId+approverId used to be
+  // deduplicated only by an application-level findFirst-then-create check,
+  // which is a classic TOCTOU race -- two concurrent requests can both pass
+  // the findFirst before either commits. This test bypasses the HTTP route
+  // entirely and fires two real, concurrent INSERTs at Postgres for the exact
+  // same (requestId, approverId) pair via Promise.all, proving the database's
+  // own UNIQUE(requestId, approverId) constraint -- not the application check
+  // -- is what makes duplication impossible. Using Promise.all (not two
+  // sequential awaits) is what actually exercises the race window: both
+  // inserts are in flight against Postgres at the same time.
+  it("the database allows only one of two genuinely concurrent inserts for the same (requestId, approverId)", async () => {
+    const { data: created } = await apiRequest("/actions", {
+      method: "POST",
+      token: creator.token,
+      body: { type: nOfMType, payload: { amount: 350 } },
+    });
+    const requestId = created.approvalRequest.id;
+
+    const insertVote = (signature: string) =>
+      prisma.approvalVote.create({
+        data: {
+          requestId,
+          approverId: approver1.id,
+          decision: "APPROVE",
+          signature,
+          deviceId: `mock-cred-${approver1.id}`,
+        },
+      });
+
+    const results = await Promise.allSettled([insertVote("sig-race-1"), insertVote("sig-race-2")]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const rejection = (rejected[0] as PromiseRejectedResult).reason;
+    expect(rejection).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    expect((rejection as Prisma.PrismaClientKnownRequestError).code).toBe("P2002");
+
+    const votes = await prisma.approvalVote.findMany({ where: { requestId, approverId: approver1.id } });
+    expect(votes).toHaveLength(1);
+  });
+
+  // Same regression, exercised through the real HTTP route with genuinely
+  // concurrent requests (Promise.all, not sequential awaits). Unlike the
+  // direct-Prisma test above, the exact status code the "losing" request gets
+  // back is legitimately timing-dependent here: the single-use WebAuthn
+  // challenge store (server/src/lib/challengeStore.ts) is keyed per
+  // approver+request and deletes-on-read, so depending on interleaving the
+  // second request may lose at the challenge-consumption step (400, "session
+  // expired") rather than at the duplicate-vote step -- both are legitimate,
+  // safe outcomes. What must hold deterministically, and is what this test
+  // asserts, is the end-to-end invariant: never two 200s, never a 500, and
+  // never more than one ApprovalVote row persisted for the pair.
+  it("handles two genuinely concurrent HTTP vote submissions from the same approver without a 500 or a duplicate row", async () => {
+    const { data: created } = await apiRequest("/actions", {
+      method: "POST",
+      token: creator.token,
+      body: { type: nOfMType, payload: { amount: 360 } },
+    });
+    const requestId = created.approvalRequest.id;
+
+    const [first, second] = await Promise.all([
+      castVote(requestId, approver1, "APPROVE", "sig-concurrent-1"),
+      castVote(requestId, approver1, "APPROVE", "sig-concurrent-2"),
+    ]);
+
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).not.toContain(500);
+    expect(statuses.filter((s) => s === 200)).toHaveLength(1);
+    expect(statuses.filter((s) => s === 400)).toHaveLength(1);
+
+    const votes = await prisma.approvalVote.findMany({ where: { requestId, approverId: approver1.id } });
+    expect(votes).toHaveLength(1);
   });
 
   it("blocks the requester from voting on their own action, even when their role is eligible", async () => {

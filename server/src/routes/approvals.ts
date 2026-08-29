@@ -12,10 +12,27 @@ import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { requireTrust } from "../middleware/requireTrust.js";
 import { appendAuditLog } from "../lib/audit.js";
-import { QuorumType } from "@prisma/client";
+import { Prisma, QuorumType } from "@prisma/client";
 import { io } from "../app.js";
 
 export const approvalsRouter = Router();
+
+// The findFirst check before the vote transaction below is a fast-path/UX
+// check only, not the source of truth -- it's a plain check-then-insert and
+// is race-prone under concurrent requests, which can both pass it before
+// either commits. ApprovalVote's UNIQUE(requestId, approverId) database
+// constraint (see the "add_approval_vote_unique_constraint" migration) is
+// the authoritative guard. When a concurrent duplicate slips past the
+// findFirst check, it surfaces here as a Postgres unique-violation (Prisma
+// P2002), same dual-check pattern server/src/routes/users.ts already uses
+// for a different constraint, since Prisma doesn't always surface this as
+// P2002 from inside a $transaction -- sometimes only the raw SQLSTATE
+// (23505 = unique_violation) is available in the error message.
+function isDuplicateVoteError(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return true;
+  if (err instanceof Error && /\b23505\b/.test(err.message)) return true;
+  return false;
+}
 
 // GET /approvals/pending - Return pending approval requests eligible for the authenticated user
 approvalsRouter.get("/pending", requireAuth, async (req: Request, res: Response) => {
@@ -250,7 +267,7 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
     }
 
     // Perform database updates atomically in transaction
-    const { vote, requestStatus, actionStatus } = await prisma.$transaction(async (tx) => {
+    const txResult = await prisma.$transaction(async (tx) => {
       // 1. Update credential counter
       await tx.credential.update({
         where: { id: credential.id },
@@ -322,7 +339,30 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       }
 
       return { vote: newVote, requestStatus: updatedStatus, actionStatus: updatedStatus };
+    }).catch((err) => {
+      // isDuplicateVoteError() is being applied to this specific transaction,
+      // and treats ANY P2002/23505 it sees here as a duplicate vote. That is
+      // only correct because, as this transaction is currently written, the
+      // vote insert (tx.approvalVote.create above) is the sole
+      // uniquely-constrained write in it -- every other statement
+      // (tx.credential.update, tx.approvalRequest.update,
+      // tx.sensitiveAction.update) writes by primary key and touches no
+      // unique field, so it cannot itself raise P2002/23505. If a future
+      // change adds another uniquely-constrained write inside this
+      // transaction, this catch must be tightened to identify the specific
+      // ApprovalVote unique constraint (e.g. by inspecting err.meta?.target)
+      // rather than treating every P2002/23505 here as "already voted" --
+      // otherwise an unrelated constraint violation would be silently
+      // misreported to the caller as a duplicate vote.
+      if (isDuplicateVoteError(err)) return "DUPLICATE" as const;
+      throw err;
     });
+
+    if (txResult === "DUPLICATE") {
+      res.status(400).json({ error: "You have already voted on this approval request" });
+      return;
+    }
+    const { vote, requestStatus, actionStatus } = txResult;
 
     // 5. Append audit logs (outside transaction)
     await appendAuditLog({
