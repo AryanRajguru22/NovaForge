@@ -80,6 +80,7 @@ export default function ApprovalDashboard() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const socketRef = useRef<Socket | null>(null);
+  const selectedRequestIdRef = useRef<string | null>(null);
 
   const [pendingApprovals, setPendingApprovals] = useState<Approval[]>([]);
   const [submittedActions, setSubmittedActions] = useState<Action[]>([]);
@@ -294,6 +295,35 @@ export default function ApprovalDashboard() {
     socket.on("status-update", handleSocketUpdate);
     socket.on("escalated", handleSocketUpdate);
 
+    // The server's io.use() middleware (server/src/lib/socketSecurity.ts)
+    // rejects a connection whenever the session cookie is missing, invalid,
+    // or no longer live -- the only reason this fires in this app. Retrying
+    // that indefinitely (socket.io-client's default reconnection behavior)
+    // would just hammer the server forever after a logout or a revoked
+    // session, so a rejected connection stops trying rather than looping.
+    // The trade-off: a transient network-level failure also stops retrying
+    // here rather than being distinguished from an auth failure, since the
+    // two aren't distinguishable from a connect_error alone -- acceptable
+    // given the dashboard already re-fetches over REST on other triggers,
+    // and the user can always reload.
+    socket.on("connect_error", () => {
+      socket.disconnect();
+    });
+
+    // A dropped-and-restored connection re-joins whatever request is
+    // currently selected -- otherwise live updates silently stop until the
+    // user picks a different request, since join-challenge is only
+    // otherwise (re-)emitted when the *selection* changes, not when the
+    // connection itself does.
+    socket.on("connect", () => {
+      const currentId = selectedRequestIdRef.current;
+      if (currentId) {
+        socket.emit("join-challenge", currentId, (result: { ok: boolean; error?: string }) => {
+          if (!result.ok) console.warn("Unable to join live updates for this request:", result.error);
+        });
+      }
+    });
+
     return () => {
       socket.disconnect();
       socketRef.current = null;
@@ -346,8 +376,11 @@ export default function ApprovalDashboard() {
 
   // Join the Socket.io room for the currently selected request (for live updates & second-device sync)
   useEffect(() => {
+    selectedRequestIdRef.current = selectedApproval?.id ?? null;
     if (selectedApproval?.id) {
-      socketRef.current?.emit("join-challenge", selectedApproval.id);
+      socketRef.current?.emit("join-challenge", selectedApproval.id, (result: { ok: boolean; error?: string }) => {
+        if (!result.ok) console.warn("Unable to join live updates for this request:", result.error);
+      });
     }
   }, [selectedApproval?.id]);
 

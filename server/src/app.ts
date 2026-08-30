@@ -23,8 +23,9 @@ import { approvalsRouter } from "./routes/approvals.js";
 import { auditRouter } from "./routes/audit.js";
 import { usersRouter } from "./routes/users.js";
 import { initEscalationService } from "./lib/escalation.js";
+import { initSocketSecurity, stopSocketSecurity } from "./lib/socketSecurity.js";
 
-export { initEscalationService };
+export { initEscalationService, initSocketSecurity, stopSocketSecurity };
 
 export const app = express();
 app.use(cors({ origin: env.rpOrigin, credentials: true }));
@@ -96,16 +97,13 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
 
 export const httpServer = http.createServer(app);
 
-// Used for the second-device push-approve flow: a login attempt on device A
-// opens a room keyed by a short-lived challenge id; device B joins after
-// scanning/tapping and emits an approve/deny event back into that room.
-// Approval votes reuse the same room-per-request-id pattern.
+// Used for the second-device push-approve flow: an approval request opens a
+// room keyed by its own id; a second device joins after scanning/sharing a
+// link and receives the same live vote-cast/status-update events the first
+// device does. Room joins are authenticated and authorized in
+// server/src/lib/socketSecurity.ts (initSocketSecurity, called from
+// index.ts / test/testServer.ts) -- this module only constructs the server;
+// it deliberately registers no connection handling of its own.
 export const io = new SocketIOServer(httpServer, {
   cors: { origin: env.rpOrigin, credentials: true },
-});
-
-io.on("connection", (socket) => {
-  socket.on("join-challenge", (challengeId: string) => {
-    socket.join(challengeId);
-  });
 });

@@ -12,6 +12,7 @@ import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { requireTrust } from "../middleware/requireTrust.js";
 import { appendAuditLog } from "../lib/audit.js";
+import { getApprovalAccessContext } from "../lib/approvalAccess.js";
 import { Prisma, QuorumType } from "@prisma/client";
 import { io } from "../app.js";
 
@@ -118,12 +119,13 @@ approvalsRouter.post("/:id/options", requireAuth, async (req: Request, res: Resp
     }
 
     // Check eligibility
-    if (!approvalRequest.policy.eligibleRoles.includes(user.role)) {
+    const optionsAccess = getApprovalAccessContext(user.id, user.role, approvalRequest.action, approvalRequest.policy);
+    if (!optionsAccess.isEligibleRole) {
       res.status(403).json({ error: "Forbidden: You are not eligible to approve this action" });
       return;
     }
 
-    if (approvalRequest.action.requestedById === user.id) {
+    if (optionsAccess.isRequester) {
       res.status(403).json({ error: "Forbidden: Requester cannot approve their own action" });
       return;
     }
@@ -195,12 +197,13 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
     }
 
     // Eligibility check
-    if (!approvalRequest.policy.eligibleRoles.includes(user.role)) {
+    const voteAccess = getApprovalAccessContext(user.id, user.role, approvalRequest.action, approvalRequest.policy);
+    if (!voteAccess.isEligibleRole) {
       res.status(403).json({ error: "Forbidden: You are not eligible to approve this action" });
       return;
     }
 
-    if (approvalRequest.action.requestedById === user.id) {
+    if (voteAccess.isRequester) {
       res.status(403).json({ error: "Forbidden: Requester cannot approve their own action" });
       return;
     }

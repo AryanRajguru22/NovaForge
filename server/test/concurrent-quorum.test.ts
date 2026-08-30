@@ -158,33 +158,37 @@ describe("P0-2: concurrent quorum resolution", () => {
   // added here): proves the transitionWon gate on the terminal status-update
   // emission (server/src/routes/approvals.ts) actually results in exactly
   // one event reaching a connected client, not just that the gating code
-  // exists. The socket joins the request's room and starts collecting events
-  // *before* either vote fires, so there's no race between "join" and
-  // "emit": both concurrent votes are only sent after the join is
-  // acknowledged over the socket connection.
+  // exists. The socket authenticates as approverA (via the P0-3 io.use()
+  // middleware, server/src/lib/socketSecurity.ts) and joins the request's
+  // room -- itself now an authenticated, authorized action, not a bare
+  // socket.join() -- *before* either vote fires, so there's no race between
+  // "join" and "emit": both concurrent votes are only sent after the join
+  // is acknowledged over the socket connection.
   it("TEST 1b: concurrent APPROVE votes that resolve quorum emit exactly one terminal status-update event over Socket.io", async () => {
     const created = await createRequest(nOfMType, 101);
     const requestId = created.approvalRequest.id;
 
-    const socket: Socket = ioClient(baseUrl, { transports: ["websocket"], forceNew: true });
+    // Node's socket.io-client (unlike a browser) honors extraHeaders on the
+    // handshake request, including for a websocket-only connection -- the
+    // standard way for a Node-based test client to present the same cookie
+    // a real browser would send automatically via withCredentials: true.
+    const socket: Socket = ioClient(baseUrl, {
+      transports: ["websocket"],
+      forceNew: true,
+      extraHeaders: { Cookie: `accessToken=${approverA.token}` },
+    });
     const statusUpdates: Array<{ requestId: string; status: string }> = [];
     socket.on("status-update", (payload: { requestId: string; status: string }) => {
       if (payload.requestId === requestId) statusUpdates.push(payload);
     });
 
-    // join-challenge has no server-side ack (server/src/app.ts's handler is
-    // fire-and-forget: socket.on("join-challenge", (id) => socket.join(id))),
-    // so there's no confirmation to wait on beyond the connection itself
-    // being fully established. socket.emit here is sent over an already-live
-    // connection the instant "connect" fires, and the server's join
-    // processing (a synchronous socket.join() call, no I/O) completes long
-    // before either vote's HTTP round trip -- which involves real DB
-    // work -- reaches the point of emitting anything.
     await new Promise<void>((resolve, reject) => {
       socket.on("connect_error", reject);
       socket.on("connect", () => {
-        socket.emit("join-challenge", requestId);
-        resolve();
+        socket.emit("join-challenge", requestId, (result: { ok: boolean; error?: string }) => {
+          if (result.ok) resolve();
+          else reject(new Error(`join-challenge denied: ${result.error}`));
+        });
       });
     });
 

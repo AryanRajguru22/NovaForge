@@ -1,5 +1,5 @@
 import type { AddressInfo } from "node:net";
-import { httpServer, io, initEscalationService } from "../src/app.js";
+import { httpServer, io, initEscalationService, initSocketSecurity, stopSocketSecurity } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
 import { signAccessToken } from "../src/lib/jwt.js";
 import { stopEscalationService } from "../src/lib/escalation.js";
@@ -11,8 +11,14 @@ let baseUrl = "";
 // a unique-constraint violation trying to recreate the same fixed email.
 export const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-export async function startTestServer(): Promise<string> {
+// sweepIntervalMs defaults to socketSecurity's own production default
+// (60s) when omitted -- every existing test file's run completes in well
+// under that, so the revocation sweep effectively never fires for them and
+// adds no extra database load. Only a test file specifically exercising the
+// sweep (server/test/socket-security.test.ts) needs to pass a short value.
+export async function startTestServer(options: { sweepIntervalMs?: number } = {}): Promise<string> {
   initEscalationService(io);
+  initSocketSecurity(io, { sweepIntervalMs: options.sweepIntervalMs });
   await new Promise<void>((resolve) => {
     httpServer.listen(0, resolve);
   });
@@ -23,6 +29,7 @@ export async function startTestServer(): Promise<string> {
 
 export async function stopTestServer(): Promise<void> {
   stopEscalationService();
+  stopSocketSecurity();
   await new Promise<void>((resolve, reject) => {
     httpServer.close((err) => (err ? reject(err) : resolve()));
   });
