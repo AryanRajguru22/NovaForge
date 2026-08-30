@@ -24,7 +24,12 @@ export function stopEscalationService() {
 
 let isRunning = false;
 
-async function checkEscalations() {
+// Exported only so tests can invoke a single escalation pass directly and
+// deterministically (e.g. concurrently with a vote, via Promise.all) instead
+// of waiting on the real 5-second setInterval in initEscalationService above.
+// Production behavior is unchanged -- this is still the exact same function
+// the interval timer calls; exporting it adds a second caller, nothing else.
+export async function checkEscalations() {
   if (isRunning) return;
   isRunning = true;
   try {

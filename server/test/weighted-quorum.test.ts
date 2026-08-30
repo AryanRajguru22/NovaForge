@@ -37,12 +37,14 @@ describe("WEIGHTED quorum resolution", () => {
     `weighted-creator-${runSuffix}@example.com`,
     `weighted-light-${runSuffix}@example.com`,
     `weighted-heavy-${runSuffix}@example.com`,
+    `weighted-medium-${runSuffix}@example.com`,
   ];
   const weightedType = "test:vote-weighted";
 
   let creator: { id: string; token: string };
   let lightVoter: { id: string; token: string };
   let heavyVoter: { id: string; token: string };
+  let mediumVoter: { id: string; token: string };
 
   beforeAll(async () => {
     await startTestServer();
@@ -52,19 +54,24 @@ describe("WEIGHTED quorum resolution", () => {
     const c = await createUserWithToken({ email: emails[0], role: "MEMBER" });
     const light = await createUserWithToken({ email: emails[1], role: "APPROVER" });
     const heavy = await createUserWithToken({ email: emails[2], role: "APPROVER" });
+    const medium = await createUserWithToken({ email: emails[3], role: "APPROVER" });
 
     creator = { id: c.user.id, token: c.token };
     lightVoter = { id: light.user.id, token: light.token };
     heavyVoter = { id: heavy.user.id, token: heavy.token };
+    mediumVoter = { id: medium.user.id, token: medium.token };
 
-    for (const u of [lightVoter, heavyVoter]) {
+    for (const u of [lightVoter, heavyVoter, mediumVoter]) {
       await addMockPasskey(u.id);
     }
 
     // heavyVoter's single vote (weight 3) alone clears the threshold (3);
-    // lightVoter's alone (weight 1) doesn't.
+    // lightVoter's alone (weight 1) doesn't. mediumVoter (weight 2) is used
+    // only by the P0-2 concurrency test below: lightVoter(1) + mediumVoter(2)
+    // together also reach 3, with neither alone sufficient.
     await prisma.user.update({ where: { id: lightVoter.id }, data: { voteWeight: 1 } });
     await prisma.user.update({ where: { id: heavyVoter.id }, data: { voteWeight: 3 } });
+    await prisma.user.update({ where: { id: mediumVoter.id }, data: { voteWeight: 2 } });
 
     await prisma.approvalPolicy.create({
       data: {
@@ -126,5 +133,43 @@ describe("WEIGHTED quorum resolution", () => {
     const vote = await castVote(requestId, lightVoter, "REJECT", "sig-light-reject");
     expect(vote.status).toBe(200);
     expect(vote.data.requestStatus).toBe("REJECTED");
+  });
+
+  // P0-2 regression: two concurrent APPROVE votes whose combined voteWeight
+  // (1 + 2 = 3) crosses the threshold, but neither alone (1 < 3, 2 < 3)
+  // does. Before the fix, each transaction's own unlocked tally could see
+  // only its own vote, and both could independently compute a sub-threshold
+  // weight and leave the request stuck PENDING even though the two votes
+  // together satisfy the policy. Promise.all fires both HTTP requests
+  // genuinely concurrently -- not two sequential awaits -- to exercise that
+  // race window against the WEIGHTED quorum path specifically.
+  it("TEST 4 (P0-2): two concurrent APPROVE votes whose combined weight crosses the threshold, neither alone sufficient, resolve to APPROVED", async () => {
+    const { data: created } = await apiRequest("/actions", {
+      method: "POST",
+      token: creator.token,
+      body: { type: weightedType, payload: { amount: 400 } },
+    });
+    const requestId = created.approvalRequest.id;
+
+    const [r1, r2] = await Promise.all([
+      castVote(requestId, lightVoter, "APPROVE", "t4-sig-light"),
+      castVote(requestId, mediumVoter, "APPROVE", "t4-sig-medium"),
+    ]);
+
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    const statuses = [r1.data.requestStatus, r2.data.requestStatus].sort();
+    expect(statuses).toEqual(["APPROVED", "PENDING"]);
+
+    const dbRequest = await prisma.approvalRequest.findUnique({ where: { id: requestId } });
+    expect(dbRequest?.status).toBe("APPROVED");
+
+    const votes = await prisma.approvalVote.findMany({ where: { requestId } });
+    expect(votes).toHaveLength(2);
+
+    const approvedAudit = await prisma.auditLog.count({
+      where: { entityType: "ApprovalRequest", entityId: requestId, event: "REQUEST_APPROVED" },
+    });
+    expect(approvedAudit).toBe(1);
   });
 });
