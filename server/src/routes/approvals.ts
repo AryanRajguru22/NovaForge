@@ -1,18 +1,25 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import {
-  generateAuthenticationOptions,
-  verifyAuthenticationResponse,
-} from "@simplewebauthn/server";
+import { generateAuthenticationOptions } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON } from "@simplewebauthn/types";
-import { isoBase64URL } from "@simplewebauthn/server/helpers";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { setChallenge, takeChallenge } from "../lib/challengeStore.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { requireTrust } from "../middleware/requireTrust.js";
-import { appendAuditLog } from "../lib/audit.js";
+import { appendAuditLog, auditedTransaction } from "../lib/audit.js";
 import { getApprovalAccessContext } from "../lib/approvalAccess.js";
+import { verifyPasskeyAssertion } from "../lib/webauthn.js";
+import { sha256Hex } from "../lib/canonicalJson.js";
+import {
+  DECISIONS,
+  buildDecisionStatement,
+  computeSubjectDigest,
+  parseStatement,
+  serializeStatement,
+  statementChallenge,
+  statementChallengeBytes,
+} from "../lib/approvalSignature.js";
 import { Prisma, QuorumType } from "@prisma/client";
 import { io } from "../app.js";
 
@@ -85,9 +92,69 @@ approvalsRouter.get("/pending", requireAuth, async (req: Request, res: Response)
   }
 });
 
-// POST /approvals/:id/options - Generate WebAuthn options for voting
+// --- Decision-bound voting (P0-4) ---
+//
+// 1. POST /approvals/:id/options {decision, reason?}
+//    The server builds a canonical decision statement (request, action,
+//    subject digest, approver, decision, reason, nonce, validity window) and
+//    returns WebAuthn options whose challenge is SHA-256(statement). The
+//    statement is also returned so the client can show exactly what is being
+//    signed. The pending statement is held server-side, single-use.
+// 2. POST /approvals/:id/vote {decision, reason?, response}
+//    The server loads the pending statement, requires the submitted decision
+//    and reason to equal it, and verifies the assertion against
+//    SHA-256(statement) with user verification required. Under the request row
+//    lock it re-derives the subject digest from the stored payload and refuses
+//    the vote if the subject no longer matches what was signed. The full
+//    evidence is stored immutably on the vote.
+//
+// Consequences: an APPROVE signature can't be submitted as REJECT, a
+// signature for request A can't be used on request B, and a signature over
+// one payload digest can't approve a modified payload -- each yields a
+// different challenge, so the assertion simply doesn't verify.
+
+const decisionSchema = z.enum(DECISIONS);
+const reasonSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .transform((v) => (v && v.length > 0 ? v : null));
+
+const optionsSchema = z.object({ decision: decisionSchema, reason: reasonSchema });
+
+// Keyed by the challenge itself, so two ceremonies the same approver starts
+// for the same request (two tabs, a retry) don't overwrite each other; each
+// statement is still single-use, and the one-vote-per-approver database
+// constraint decides between them.
+function pendingStatementKey(userId: string, requestId: string, challenge: string): string {
+  return `vote:${userId}:${requestId}:${challenge}`;
+}
+
+/** The challenge an assertion claims to answer, used only to look up the
+ * pending statement; verification is always against that statement's own hash. */
+function claimedChallenge(response: AuthenticationResponseJSON): string | null {
+  try {
+    const clientData = JSON.parse(Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8")) as {
+      challenge?: unknown;
+    };
+    return typeof clientData.challenge === "string" && /^[A-Za-z0-9_-]{43}$/.test(clientData.challenge)
+      ? clientData.challenge
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// POST /approvals/:id/options - Build the decision statement and WebAuthn options for signing it
 approvalsRouter.post("/:id/options", requireAuth, async (req: Request, res: Response) => {
   const { id } = req.params;
+  const parsed = optionsSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "A decision (APPROVE, REJECT or POSTPONE) is required", issues: parsed.error.issues });
+    return;
+  }
+  const { decision, reason } = parsed.data;
 
   try {
     const approvalRequest = await prisma.approvalRequest.findUnique({
@@ -130,33 +197,54 @@ approvalsRouter.post("/:id/options", requireAuth, async (req: Request, res: Resp
       return;
     }
 
+    const subjectDigest = approvalRequest.action.payloadDigest;
+    if (!subjectDigest) {
+      // Created before subject digests existed: there is nothing verifiable
+      // to sign, so it cannot be decided with a bound signature.
+      res.status(409).json({ error: "This request predates signed decisions and cannot be voted on" });
+      return;
+    }
+
     const passkeys = user.credentials.filter((c) => c.type === "PASSKEY" && c.credentialId);
     if (passkeys.length === 0) {
       res.status(400).json({ error: "No passkeys registered for this account" });
       return;
     }
 
+    const statement = buildDecisionStatement({
+      requestId: approvalRequest.id,
+      actionId: approvalRequest.action.id,
+      actionType: approvalRequest.action.type,
+      subjectDigest,
+      approverId: user.id,
+      decision,
+      reason,
+      rpId: env.rpId,
+    });
+    const serialized = serializeStatement(statement);
+
     const options = await generateAuthenticationOptions({
       rpID: env.rpId,
-      userVerification: "preferred",
+      userVerification: "required",
       allowCredentials: passkeys.map((c) => ({ id: c.credentialId! })),
+      challenge: statementChallengeBytes(serialized),
     });
 
-    // Save the challenge in challenge store
-    setChallenge(`vote:${user.id}:${id}`, options.challenge);
+    setChallenge(pendingStatementKey(user.id, id, options.challenge), serialized);
 
-    res.json(options);
+    res.json({ ...options, statement: serialized });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
 const voteSchema = z.object({
-  decision: z.enum(["APPROVE", "REJECT"]),
+  decision: decisionSchema,
+  reason: reasonSchema,
   response: z.custom<AuthenticationResponseJSON>((v) => typeof v === "object" && v !== null),
 });
 
-// POST /approvals/:id/vote - Submit approval vote with WebAuthn signature
+// POST /approvals/:id/vote - Submit a vote whose signature covers the decision statement
 approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Request, res: Response) => {
   const { id } = req.params;
   const parsed = voteSchema.safeParse(req.body);
@@ -165,7 +253,7 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
     return;
   }
 
-  const { decision, response } = parsed.data;
+  const { decision, reason, response } = parsed.data;
 
   try {
     const approvalRequest = await prisma.approvalRequest.findUnique({
@@ -217,147 +305,131 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       return;
     }
 
-    // Get expected challenge
-    const expectedChallenge = takeChallenge(`vote:${user.id}:${id}`);
-    if (!expectedChallenge) {
+    // The single-use pending statement this vote must have signed.
+    const challenge = claimedChallenge(response);
+    const serialized = challenge ? takeChallenge(pendingStatementKey(user.id, id, challenge)) : undefined;
+    const statement = serialized ? parseStatement(serialized) : null;
+    if (!serialized || !statement || statementChallenge(serialized) !== challenge) {
+      res.status(400).json({ error: "Vote session expired or not initialized, please request options again" });
+      return;
+    }
+    if (
+      statement.requestId !== id ||
+      statement.approverId !== user.id ||
+      statement.decision !== decision ||
+      statement.reason !== reason
+    ) {
+      res.status(400).json({ error: "The submitted decision does not match the statement that was signed" });
+      return;
+    }
+    if (new Date(statement.expiresAt) < new Date()) {
       res.status(400).json({ error: "Vote session expired or not initialized, please request options again" });
       return;
     }
 
-    // Find signer passkey
-    const credential = user.credentials.find(
-      (c) => c.type === "PASSKEY" && c.credentialId === response.id,
-    );
-    if (!credential || !credential.publicKey || !credential.credentialId) {
-      res.status(400).json({ error: "Unknown credential" });
+    const verification = await verifyPasskeyAssertion({
+      credentials: user.credentials,
+      response,
+      expectedChallenge: statementChallenge(serialized),
+      requireUserVerification: true,
+    });
+    if (!verification.ok) {
+      res.status(400).json({
+        error: verification.error === "UNKNOWN_CREDENTIAL" ? "Unknown credential" : "Vote verification failed",
+      });
       return;
     }
-
-    // Verify assertion
-    // Real WebAuthn assertions can't be scripted without a live authenticator, so the
-    // test suite substitutes a mock verification result — gated on NODE_ENV=test as well
-    // as the flag itself, so this can never bypass signature checks outside a test run.
-    let verification;
-    try {
-      if (process.env.NODE_ENV === "test" && process.env.BYPASS_WEBAUTHN === "true") {
-        verification = {
-          verified: true,
-          authenticationInfo: {
-            newCounter: Number(credential.counter) + 1,
-          },
-        };
-      } else {
-        verification = await verifyAuthenticationResponse({
-          response,
-          expectedChallenge,
-          expectedOrigin: env.rpOrigin,
-          expectedRPID: env.rpId,
-          authenticator: {
-            credentialID: credential.credentialId,
-            credentialPublicKey: isoBase64URL.toBuffer(credential.publicKey),
-            counter: Number(credential.counter),
-          },
-        });
-      }
-    } catch (err) {
-      res.status(400).json({ error: "Vote verification failed" });
-      return;
-    }
-
-    if (!verification.verified) {
-      res.status(400).json({ error: "Vote verification failed" });
-      return;
-    }
+    const credential = verification.credential;
+    const statementHash = sha256Hex(serialized);
 
     // Perform database updates atomically in transaction.
     //
     // Everything read above this point (approvalRequest.status/expiresAt/policy,
     // captured before the transaction even starts) is a fast-path/UX check
-    // only -- exactly like the findFirst duplicate-vote check a few lines up.
-    // It lets an obviously-invalid request fail fast, before ever prompting
-    // for a WebAuthn signature, but it is NOT authoritative: another
-    // concurrent vote transaction (or the escalation poller) can commit a
-    // status change, a policy reassignment, or an expiry in the gap between
-    // that read and this transaction actually running -- and, separately,
-    // two concurrent votes can each see only their own just-inserted vote
-    // (the other's insert is still uncommitted and invisible under Postgres's
-    // default READ COMMITTED isolation), so a plain re-tally without locking
-    // can compute an incomplete quorum, and a plain unconditional status
-    // write can blindly overwrite whatever another such transaction just
-    // committed. The SELECT ... FOR UPDATE below closes both: it locks this
-    // one ApprovalRequest row for the rest of the transaction, so any other
-    // transaction trying to read-then-write the same row (another vote, or
-    // escalation's own conditional updateMany) queues behind this one and is
-    // guaranteed to observe this transaction's effects once it commits.
-    // Locking one row at a time means votes on *different* requests are never
-    // serialized against each other -- only concurrent writers to the same
-    // request queue up, and the queued writer waits rather than retrying.
-    const txResult = await prisma.$transaction(async (tx) => {
-      // 1. Lock the ApprovalRequest row FIRST -- before any write, and before
-      // re-reading anything else the decision below depends on. Prisma has no
-      // native "lock this row" option on its fluent API, so a raw query
-      // (auto-parameterized via the tagged-template form, not
-      // $queryRawUnsafe) is the standard way to issue FOR UPDATE through the
-      // transaction-bound client. The values read here -- not the outer,
-      // pre-transaction read -- are what the rest of this transaction treats
-      // as authoritative.
+    // only. It lets an obviously-invalid request fail fast, but it is NOT
+    // authoritative: another concurrent vote transaction (or the escalation
+    // poller) can commit a status change, a policy reassignment, or an expiry
+    // in the gap between that read and this transaction actually running --
+    // and two concurrent votes can each see only their own just-inserted vote
+    // under READ COMMITTED. The SELECT ... FOR UPDATE below closes both: it
+    // locks this one ApprovalRequest row for the rest of the transaction, so
+    // any other transaction trying to read-then-write the same row queues
+    // behind this one and observes its effects once it commits.
+    //
+    // The vote, the resulting status transition and every audit event commit
+    // together (P0-5): none of them can exist without the others.
+    const txResult = await auditedTransaction(async (tx) => {
+      // 1. Lock the ApprovalRequest row FIRST.
       const [lockedRequest] = await tx.$queryRaw<
         { id: string; status: string; expiresAt: Date; policyId: string; actionId: string }[]
       >`SELECT "id", "status", "expiresAt", "policyId", "actionId" FROM "ApprovalRequest" WHERE "id" = ${id} FOR UPDATE`;
 
       // 2. Re-validate against the locked row, not the pre-transaction read.
-      // A concurrent transaction may already have resolved, rejected, or
-      // expired this request in the gap between the outer read and this lock
-      // being acquired -- if so, no vote is inserted and nothing about this
-      // request (ApprovalRequest or SensitiveAction) is touched.
       if (!lockedRequest || lockedRequest.status !== "PENDING" || lockedRequest.expiresAt < new Date()) {
         return "NOT_PENDING" as const;
       }
 
-      // 3. Re-read the policy this request is *currently* assigned to (its
-      // policyId, as just read under the lock), not the policy object
-      // captured by the outer, pre-transaction read -- if escalation
-      // reassigned this request to a fallback policy concurrently, the
-      // quorum rules applied below must match the row's real, current
-      // policyId, not a stale one.
+      // 3. The subject being decided must still be exactly what was signed:
+      // same action, stored digest unchanged, and the stored payload still
+      // hashing to that digest.
+      const action = await tx.sensitiveAction.findUnique({ where: { id: lockedRequest.actionId } });
+      if (
+        !action ||
+        action.id !== statement.actionId ||
+        action.type !== statement.actionType ||
+        action.payloadDigest !== statement.subjectDigest ||
+        computeSubjectDigest(action.type, action.payload) !== statement.subjectDigest
+      ) {
+        return "SUBJECT_MISMATCH" as const;
+      }
+
+      // 4. Re-read the policy this request is *currently* assigned to.
       const policy = await tx.approvalPolicy.findUnique({ where: { id: lockedRequest.policyId } });
       if (!policy) {
-        // ApprovalRequest.policyId is a required, RESTRICT-protected foreign
-        // key -- a policy can never be deleted while a request still
-        // references it (server/src/routes/policies.ts). Reaching this is a
-        // data-integrity violation, not a normal "policy went away" case, so
-        // it fails loud via the outer 500 handler rather than guessing.
         throw new Error(
           `ApprovalPolicy ${lockedRequest.policyId} referenced by locked ApprovalRequest ${id} not found`,
         );
       }
 
-      // 4. Update credential counter
+      // 4b. Re-check eligibility against the locked action and policy. The
+      // pre-transaction check used a snapshot; escalation may have reassigned
+      // the request to a fallback policy with different eligible roles since.
+      // Must stay before the first write below: a returned sentinel commits.
+      const lockedAccess = getApprovalAccessContext(user.id, user.role, action, policy);
+      if (!lockedAccess.isEligibleRole) {
+        return "NOT_ELIGIBLE" as const;
+      }
+      if (lockedAccess.isRequester) {
+        return "IS_REQUESTER" as const;
+      }
+
+      // 5. Update credential counter
       await tx.credential.update({
         where: { id: credential.id },
         data: {
-          counter: BigInt(verification.authenticationInfo.newCounter),
+          counter: BigInt(verification.newCounter),
           lastUsedAt: new Date(),
         },
       });
 
-      // 5. Create the Vote
+      // 6. Create the vote with its full, re-verifiable evidence.
       const newVote = await tx.approvalVote.create({
         data: {
           requestId: id,
           approverId: user.id,
           decision,
+          reason,
           signature: response.response.signature,
           deviceId: credential.id,
+          signedStatement: serialized,
+          statementHash,
+          clientDataJSON: response.response.clientDataJSON,
+          authenticatorData: response.response.authenticatorData,
+          credentialPublicKey: credential.publicKey,
         },
       });
 
-      // 6. Retrieve all votes for this request to recalculate status. Because
-      // the row lock from step 1 is held for the rest of this transaction, no
-      // other vote transaction for this same request can be concurrently in
-      // flight -- this read is guaranteed to see every vote already
-      // committed for this request, so the tally below can't miss a
-      // just-inserted-but-not-yet-committed vote from a competing approver.
+      // 7. Recalculate status from every vote (row lock held => complete view).
       const votes = await tx.approvalVote.findMany({
         where: { requestId: id },
         include: { approver: true },
@@ -365,11 +437,16 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
 
       const approvedVotes = votes.filter((v) => v.decision === "APPROVE");
       const rejectedVotes = votes.filter((v) => v.decision === "REJECT");
+      const postponedVotes = votes.filter((v) => v.decision === "POSTPONE");
 
-      let updatedStatus: "PENDING" | "APPROVED" | "REJECTED" = "PENDING";
+      let updatedStatus: "PENDING" | "APPROVED" | "REJECTED" | "POSTPONED" = "PENDING";
 
+      // REJECT is an immediate veto and takes precedence; POSTPONE likewise
+      // ends this request (the requester may submit a new one later).
       if (rejectedVotes.length > 0) {
         updatedStatus = "REJECTED";
+      } else if (postponedVotes.length > 0) {
+        updatedStatus = "POSTPONED";
       } else {
         if (policy.quorumType === QuorumType.N_OF_M) {
           if (approvedVotes.length >= policy.minApprovals) {
@@ -383,8 +460,7 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
           }
         } else if (policy.quorumType === QuorumType.WEIGHTED) {
           // For WEIGHTED policies, minApprovals is the weight threshold rather
-          // than a headcount -- each approver's User.voteWeight (settable per
-          // account by a super admin) is summed instead of just counting votes.
+          // than a headcount -- each approver's User.voteWeight is summed.
           const totalWeight = approvedVotes.reduce((sum, v) => sum + v.approver.voteWeight, 0);
           if (totalWeight >= policy.minApprovals) {
             updatedStatus = "APPROVED";
@@ -392,21 +468,24 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
         }
       }
 
-      // 7. Conditionally transition status -- a compare-and-swap, not a
-      // blind write. The WHERE clause only matches if the row is still
-      // PENDING at the moment this statement executes. Under the lock held
-      // since step 1, nothing else could have changed it in between, so this
-      // is expected to always match (count === 1) whenever
-      // updatedStatus !== "PENDING" -- the guard is kept anyway, both as
-      // defense-in-depth against a future change to this transaction's lock
-      // discipline, and to mirror the exact pattern
-      // server/src/lib/escalation.ts already uses for its own conditional
-      // writes. `transitionWon` -- not the locally computed `updatedStatus`
-      // -- is what the rest of this handler treats as proof that *this*
-      // transaction actually caused the transition: under concurrent votes,
-      // more than one transaction can independently compute the same (or a
-      // conflicting) terminal status, but only the one whose conditional
-      // update actually matched a row still in PENDING gets to record it.
+      await appendAuditLog(tx, {
+        entityType: "ApprovalVote",
+        entityId: newVote.id,
+        event: "VOTE_CAST",
+        actorId: user.id,
+        metadata: {
+          requestId: id,
+          decision,
+          reason,
+          deviceId: credential.id,
+          statementHash,
+          subjectDigest: statement.subjectDigest,
+        },
+      });
+
+      // 8. Conditionally transition status -- a compare-and-swap, not a blind
+      // write. `transitionWon`, not the locally computed status, is what proves
+      // *this* transaction caused the transition.
       let transitionWon = false;
       if (updatedStatus !== "PENDING") {
         const requestUpdate = await tx.approvalRequest.updateMany({
@@ -421,41 +500,38 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
             data: { status: updatedStatus },
           });
           if (actionUpdate.count !== 1) {
-            // ApprovalRequest just transitioned under this same lock, so its
-            // linked SensitiveAction must still have been PENDING too --
-            // anything else means the two drifted out of sync via some other
-            // code path, which must never be allowed to pass silently.
             throw new Error(
               `ApprovalRequest ${id} transitioned to ${updatedStatus} but its SensitiveAction ${lockedRequest.actionId} was not PENDING`,
             );
           }
+
+          await appendAuditLog(tx, {
+            entityType: "ApprovalRequest",
+            entityId: id,
+            event: `REQUEST_${updatedStatus}`,
+            actorId: user.id,
+            metadata: { decision, reason, voterId: user.id, voteId: newVote.id, statementHash },
+          });
+
+          await appendAuditLog(tx, {
+            entityType: "SensitiveAction",
+            entityId: lockedRequest.actionId,
+            event: `ACTION_${updatedStatus}`,
+            actorId: user.id,
+            metadata: { requestId: id, decision, voteId: newVote.id },
+          });
         }
       }
 
       return {
         vote: newVote,
         requestStatus: updatedStatus,
-        actionStatus: updatedStatus,
-        actionId: lockedRequest.actionId,
         transitionWon,
       };
     }).catch((err) => {
-      // isDuplicateVoteError() is being applied to this specific transaction,
-      // and treats ANY P2002/23505 it sees here as a duplicate vote. That is
-      // only correct because, as this transaction is currently written, the
-      // vote insert (tx.approvalVote.create above) is the sole
-      // uniquely-constrained write in it -- every other statement
-      // (tx.$queryRaw ... FOR UPDATE, tx.approvalPolicy.findUnique,
-      // tx.credential.update, tx.approvalRequest.updateMany,
-      // tx.sensitiveAction.updateMany) is either a plain read or writes by
-      // primary key/conditional-WHERE and touches no unique field, so none of
-      // them can raise P2002/23505. If a future change adds another
-      // uniquely-constrained write inside this transaction, this catch must
-      // be tightened to identify the specific ApprovalVote unique constraint
-      // (e.g. by inspecting err.meta?.target) rather than treating every
-      // P2002/23505 here as "already voted" -- otherwise an unrelated
-      // constraint violation would be silently misreported to the caller as
-      // a duplicate vote.
+      // The vote insert is the only uniquely-constrained write in this
+      // transaction (audit seq uniqueness is serialized by the chain-head lock),
+      // so a unique violation here means a concurrent duplicate vote.
       if (isDuplicateVoteError(err)) return "DUPLICATE" as const;
       throw err;
     });
@@ -465,63 +541,24 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       return;
     }
     if (txResult === "NOT_PENDING") {
-      // Reached only when the locked, in-transaction re-check (not the
-      // earlier fast-path read) found the request already resolved/expired --
-      // same response the fast-path check above would have given, just
-      // arrived at authoritatively instead of optimistically.
       res.status(400).json({ error: "Approval request is no longer pending" });
       return;
     }
-    const { vote, requestStatus, actionStatus, actionId, transitionWon } = txResult;
-
-    // 5. Append audit logs (outside transaction)
-    await appendAuditLog({
-      entityType: "ApprovalVote",
-      entityId: vote.id,
-      event: "VOTE_CAST",
-      actorId: user.id,
-      metadata: {
-        requestId: id,
-        decision,
-        deviceId: credential.id,
-      },
-    });
-
-    // Terminal audit events are appended only when THIS transaction's
-    // conditional write actually caused the transition (transitionWon), not
-    // merely when this transaction's own local tally happened to compute a
-    // terminal status -- see the comment on `transitionWon` above. This is
-    // what stops concurrent votes from each independently appending their own
-    // REQUEST_*/ACTION_* audit rows for what is really a single transition.
-    if (transitionWon) {
-      await appendAuditLog({
-        entityType: "ApprovalRequest",
-        entityId: id,
-        event: requestStatus === "APPROVED" ? "REQUEST_APPROVED" : "REQUEST_REJECTED",
-        actorId: user.id,
-        metadata: {
-          decision,
-          voterId: user.id,
-        },
-      });
-
-      await appendAuditLog({
-        entityType: "SensitiveAction",
-        entityId: actionId,
-        event: actionStatus === "APPROVED" ? "ACTION_APPROVED" : "ACTION_REJECTED",
-        actorId: user.id,
-        metadata: {
-          requestId: id,
-          decision,
-        },
-      });
+    if (txResult === "NOT_ELIGIBLE") {
+      res.status(403).json({ error: "Forbidden: You are not eligible to approve this action" });
+      return;
     }
+    if (txResult === "IS_REQUESTER") {
+      res.status(403).json({ error: "Forbidden: Requester cannot approve their own action" });
+      return;
+    }
+    if (txResult === "SUBJECT_MISMATCH") {
+      res.status(409).json({ error: "The request's subject changed after the decision was signed; the vote was not recorded" });
+      return;
+    }
+    const { vote, requestStatus, transitionWon } = txResult;
 
-    // 6. Socket.io event emissions. vote-cast always fires (a vote really was
-    // recorded); the terminal status-update, like the terminal audit events
-    // above, fires only when this transaction actually caused the
-    // transition, so competing transactions never emit duplicate or
-    // contradictory terminal events for the same request.
+    // Socket.io event emissions happen only after the transaction committed.
     if (io) {
       io.to(id).emit("vote-cast", { requestId: id, decision, voterId: user.id });
       if (transitionWon) {
@@ -534,6 +571,8 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       vote: {
         id: vote.id,
         decision: vote.decision,
+        reason: vote.reason,
+        statementHash: vote.statementHash,
         timestamp: vote.timestamp,
       },
       requestStatus,
@@ -565,7 +604,7 @@ approvalsRouter.get("/history", requireAuth, async (req: Request, res: Response)
           },
           // Completed requests where user was an eligible approver
           {
-            status: { in: ["APPROVED", "REJECTED", "EXPIRED"] },
+            status: { in: ["APPROVED", "REJECTED", "POSTPONED", "EXPIRED"] },
             policy: {
               eligibleRoles: { has: user.role },
             },

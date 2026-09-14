@@ -17,6 +17,31 @@ export interface ApprovalAccessContext {
   isEligibleRole: boolean;
 }
 
+/**
+ * Who may see an action's details (payload, votes, signatures) or subscribe
+ * to its live events. Legitimate relationships only:
+ *   - the requester,
+ *   - a user whose role is eligible under the request's current policy
+ *     (they may be asked to decide it),
+ *   - a user who already voted on it,
+ *   - SUPER_ADMIN, the audit authority.
+ * ADMIN manages policies but does not get blanket read access to payloads.
+ * Status is checked separately by session liveness; callers must pass the
+ * live, database-read role, never a token claim.
+ */
+export function canViewApprovalRecord(input: {
+  userId: string;
+  role: Role;
+  action: { requestedById: string };
+  policy: { eligibleRoles: Role[] } | null;
+  voterIds: string[];
+}): boolean {
+  if (input.role === "SUPER_ADMIN") return true;
+  if (input.userId === input.action.requestedById) return true;
+  if (input.policy && input.policy.eligibleRoles.includes(input.role)) return true;
+  return input.voterIds.includes(input.userId);
+}
+
 export function getApprovalAccessContext(
   userId: string,
   role: Role,

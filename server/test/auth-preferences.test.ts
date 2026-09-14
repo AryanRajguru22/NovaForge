@@ -69,6 +69,11 @@ describe("user-controlled login-method preferences", () => {
     });
     expect(reenable.status).toBe(200);
 
+    // TOTP replay protection accepts each time step only once, and the first
+    // test already signed in with this window's code. Simulate the next code
+    // window instead of waiting 30 seconds.
+    await prisma.credential.updateMany({ where: { userId, type: "TOTP" }, data: { totpLastUsedStep: null } });
+
     const allowed = await apiRequest("/auth/login/totp", {
       method: "POST",
       body: { email, token: authenticator.generate(totpSecret) },

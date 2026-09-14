@@ -8,15 +8,24 @@ interface Bucket {
 const buckets = new Map<string, Bucket>();
 
 /**
- * Fixed-window rate limiter keyed by IP + a request field (e.g. email), so one
- * attacker guessing many emails from one IP and one attacker hammering a single
- * account from many IPs both get throttled. In-memory only — fine for a
- * single-process demo, would need a shared store (Redis) across instances.
+ * Fixed-window rate limiter keyed by IP + route + an optional identity
+ * derived from the request body. The identity is canonicalized with the same
+ * rules the route itself applies (e.g. trim + lowercase for email) BEFORE it
+ * becomes part of the key, so "Admin@x.com", "admin@x.com" and " ADMIN@x.com"
+ * share one bucket instead of each getting a fresh budget.
+ *
+ * In-memory and per-process: a coarse first line of defense against bursts.
+ * The authoritative per-account limit for guessable factors is the
+ * database-backed throttle in server/src/lib/authThrottle.ts.
  */
-export function rateLimit(opts: { max: number; windowMs: number; keyField?: string }) {
+export function rateLimit(opts: {
+  max: number;
+  windowMs: number;
+  identity?: (req: Request) => string;
+}) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const identity = opts.keyField ? String(req.body?.[opts.keyField] ?? "") : "";
-    const key = `${req.ip}:${req.path}:${identity}`;
+    const identity = opts.identity ? opts.identity(req) : "";
+    const key = `${req.ip}:${req.baseUrl}${req.path}:${identity}`;
     const now = Date.now();
 
     const bucket = buckets.get(key);
@@ -36,4 +45,9 @@ export function rateLimit(opts: { max: number; windowMs: number; keyField?: stri
     bucket.count += 1;
     next();
   };
+}
+
+/** Test-only: forget all in-memory buckets. */
+export function resetRateLimitBuckets(): void {
+  buckets.clear();
 }

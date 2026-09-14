@@ -2,13 +2,15 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { appendAuditLog } from "../lib/audit.js";
-import { QuorumType, Role } from "@prisma/client";
+import { appendAuditLog, auditedTransaction } from "../lib/audit.js";
+import { AccountStatus, QuorumType, Role } from "@prisma/client";
 
 export const policiesRouter = Router();
 
-// Reusable Admin enforcement middleware
-async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
+// Reusable Admin enforcement middleware. requireAuth already rejects
+// non-ACTIVE accounts; the status check here is defense-in-depth so the guard
+// is sound on its own, matching the sibling guards in users.ts and audit.ts.
+export async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!req.user) {
     res.status(401).json({ error: "Not authenticated" });
     return;
@@ -17,7 +19,11 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction): Pr
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     // SUPER_ADMIN is a superset of ADMIN -- it should never be locked out of
     // anything an ADMIN can do, only granted more (role/audit access).
-    if (!user || (user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN)) {
+    if (
+      !user ||
+      (user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) ||
+      user.status !== AccountStatus.ACTIVE
+    ) {
       res.status(403).json({ error: "Forbidden: Admins only" });
       return;
     }
@@ -108,23 +114,25 @@ policiesRouter.post("/", requireAuth, requireAdmin, async (req: Request, res: Re
       }
     }
 
-    const policy = await prisma.approvalPolicy.create({
-      data: {
-        actionType: data.actionType,
-        quorumType: data.quorumType,
-        minApprovals: data.minApprovals,
-        eligibleRoles: data.eligibleRoles,
-        fallbackPolicyId: data.fallbackPolicyId ?? null,
-        escalationTimeoutSec: data.escalationTimeoutSec,
-      },
-    });
-
-    await appendAuditLog({
-      entityType: "ApprovalPolicy",
-      entityId: policy.id,
-      event: "POLICY_CREATED",
-      actorId: req.user!.id,
-      metadata: policy,
+    const policy = await auditedTransaction(async (tx) => {
+      const created = await tx.approvalPolicy.create({
+        data: {
+          actionType: data.actionType,
+          quorumType: data.quorumType,
+          minApprovals: data.minApprovals,
+          eligibleRoles: data.eligibleRoles,
+          fallbackPolicyId: data.fallbackPolicyId ?? null,
+          escalationTimeoutSec: data.escalationTimeoutSec,
+        },
+      });
+      await appendAuditLog(tx, {
+        entityType: "ApprovalPolicy",
+        entityId: created.id,
+        event: "POLICY_CREATED",
+        actorId: req.user!.id,
+        metadata: created,
+      });
+      return created;
     });
 
     res.status(201).json(policy);
@@ -179,27 +187,29 @@ policiesRouter.put("/:id", requireAuth, requireAdmin, async (req: Request, res: 
       }
     }
 
-    const updatedPolicy = await prisma.approvalPolicy.update({
-      where: { id },
-      data: {
-        actionType: data.actionType !== undefined ? data.actionType : undefined,
-        quorumType: data.quorumType !== undefined ? data.quorumType : undefined,
-        minApprovals: data.minApprovals !== undefined ? data.minApprovals : undefined,
-        eligibleRoles: data.eligibleRoles !== undefined ? data.eligibleRoles : undefined,
-        fallbackPolicyId: data.fallbackPolicyId !== undefined ? data.fallbackPolicyId : undefined,
-        escalationTimeoutSec: data.escalationTimeoutSec !== undefined ? data.escalationTimeoutSec : undefined,
-      },
-    });
-
-    await appendAuditLog({
-      entityType: "ApprovalPolicy",
-      entityId: id,
-      event: "POLICY_UPDATED",
-      actorId: req.user!.id,
-      metadata: {
-        before: existingPolicy,
-        after: updatedPolicy,
-      },
+    const updatedPolicy = await auditedTransaction(async (tx) => {
+      const updated = await tx.approvalPolicy.update({
+        where: { id },
+        data: {
+          actionType: data.actionType !== undefined ? data.actionType : undefined,
+          quorumType: data.quorumType !== undefined ? data.quorumType : undefined,
+          minApprovals: data.minApprovals !== undefined ? data.minApprovals : undefined,
+          eligibleRoles: data.eligibleRoles !== undefined ? data.eligibleRoles : undefined,
+          fallbackPolicyId: data.fallbackPolicyId !== undefined ? data.fallbackPolicyId : undefined,
+          escalationTimeoutSec: data.escalationTimeoutSec !== undefined ? data.escalationTimeoutSec : undefined,
+        },
+      });
+      await appendAuditLog(tx, {
+        entityType: "ApprovalPolicy",
+        entityId: id,
+        event: "POLICY_UPDATED",
+        actorId: req.user!.id,
+        metadata: {
+          before: existingPolicy,
+          after: updated,
+        },
+      });
+      return updated;
     });
 
     res.json(updatedPolicy);
@@ -233,16 +243,17 @@ policiesRouter.delete("/:id", requireAuth, requireAdmin, async (req: Request, re
       return;
     }
 
-    await prisma.approvalPolicy.delete({
-      where: { id },
-    });
-
-    await appendAuditLog({
-      entityType: "ApprovalPolicy",
-      entityId: id,
-      event: "POLICY_DELETED",
-      actorId: req.user!.id,
-      metadata: existingPolicy,
+    await auditedTransaction(async (tx) => {
+      await tx.approvalPolicy.delete({
+        where: { id },
+      });
+      await appendAuditLog(tx, {
+        entityType: "ApprovalPolicy",
+        entityId: id,
+        event: "POLICY_DELETED",
+        actorId: req.user!.id,
+        metadata: existingPolicy,
+      });
     });
 
     res.json({ deleted: true });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { startTestServer, stopTestServer, apiRequest, createUserWithToken, cleanupUsers, runSuffix } from "./testServer.js";
 import { prisma } from "../src/lib/prisma.js";
-import { signRefreshToken } from "../src/lib/jwt.js";
+import { signRefreshToken, generateRefreshTokenId } from "../src/lib/jwt.js";
 
 // Regression coverage for the bug where /auth/session/refresh reset
 // lastVerifiedAt to now() on every call -- including the automatic,
@@ -28,6 +28,13 @@ describe("session trust decay and recovery", () => {
 
   async function makeBackdatedSession(hoursAgo: number, trustLevel = 100) {
     const { user } = await createUserWithToken({ email: emailFor(caseCounter++), role: "MEMBER" });
+    // P0-4: a refresh token only rotates (succeeds) if its jti matches
+    // Session.currentRefreshTokenId, so the session must be created with the
+    // exact jti the signed token below carries -- otherwise every call here
+    // would be indistinguishable from replay against a token-less legacy
+    // session and would 401 + delete the session instead of exercising the
+    // trust-decay math this file is actually about.
+    const refreshTokenId = generateRefreshTokenId();
     const session = await prisma.session.create({
       data: {
         userId: user.id,
@@ -35,9 +42,10 @@ describe("session trust decay and recovery", () => {
         trustLevel,
         lastVerifiedAt: new Date(Date.now() - hoursAgo * 3_600_000),
         expiresAt: new Date(Date.now() + 30 * 24 * 3_600_000),
+        currentRefreshTokenId: refreshTokenId,
       },
     });
-    const refreshToken = signRefreshToken({ sub: user.id, sessionId: session.id });
+    const refreshToken = signRefreshToken({ sub: user.id, sessionId: session.id }, refreshTokenId);
     return { user, session, refreshToken };
   }
 
@@ -69,11 +77,21 @@ describe("session trust decay and recovery", () => {
     // session (its lastVerifiedAt just advanced to "now") and call again --
     // this simulates the very next automatic background ping a few minutes
     // later. Before the fix, this alone would jump trust straight to 100.
+    //
+    // P0-4: the first call above already rotated Session.currentRefreshTokenId
+    // to a new jti, so this second token must be signed carrying *that* jti
+    // (read fresh from the row, exactly as a real client would receive it
+    // via its rotated Set-Cookie) -- signing a token for the original,
+    // now-rotated-away jti here would correctly be treated as reuse, not as
+    // "the next legitimate check-in" this test is actually exercising.
     const refreshedSession = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
     expect(refreshedSession.trustLevel).toBe(firstTrust);
     expect(Number.isInteger(firstTrust)).toBe(true);
 
-    const secondToken = signRefreshToken({ sub: session.userId, sessionId: session.id });
+    const secondToken = signRefreshToken(
+      { sub: session.userId, sessionId: session.id },
+      refreshedSession.currentRefreshTokenId!,
+    );
     const second = await apiRequest("/auth/session/refresh", { method: "POST", refreshToken: secondToken });
     const secondTrust = second.data.trustLevel as number;
 

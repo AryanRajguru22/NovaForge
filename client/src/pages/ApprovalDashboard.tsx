@@ -7,7 +7,8 @@ import QRCode from "qrcode";
 import { ApiError, apiGet, apiPost } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
 
-type Status = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+type Status = "PENDING" | "APPROVED" | "REJECTED" | "POSTPONED" | "EXPIRED";
+type Decision = "APPROVE" | "REJECT" | "POSTPONE";
 
 interface Person {
   id: string;
@@ -28,7 +29,8 @@ interface Policy {
 
 interface Vote {
   id: string;
-  decision: "APPROVE" | "REJECT";
+  decision: Decision;
+  reason?: string | null;
   deviceId: string;
   signature: string;
   timestamp: string;
@@ -102,7 +104,7 @@ export default function ApprovalDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [voting, setVoting] = useState<"APPROVE" | "REJECT" | null>(null);
+  const [voting, setVoting] = useState<Decision | null>(null);
 
   // QR Code Modal for second device approval
   const [showQRModal, setShowQRModal] = useState(false);
@@ -384,16 +386,21 @@ export default function ApprovalDashboard() {
     }
   }, [selectedApproval?.id]);
 
-  async function castVote(decision: "APPROVE" | "REJECT") {
+  async function castVote(decision: Decision, reason: string) {
     if (!selectedApproval) return;
     setError(null);
     setStatus(null);
     setVoting(decision);
     try {
-      setStatus("Requesting approval challenge…");
-      const options = await apiPost<PublicKeyCredentialRequestOptionsJSON>(
+      // The server builds a decision statement (this request, its payload
+      // digest, you, this decision and reason) and returns WebAuthn options
+      // whose challenge is the statement's hash, so the passkey signature
+      // covers exactly this decision and nothing else.
+      const trimmedReason = reason.trim() || undefined;
+      setStatus("Preparing your signed decision…");
+      const options = await apiPost<PublicKeyCredentialRequestOptionsJSON & { statement: string }>(
         `/approvals/${selectedApproval.id}/options`,
-        {},
+        { decision, reason: trimmedReason },
       );
 
       setStatus("Waiting for your device (passkey key verification)…");
@@ -402,7 +409,7 @@ export default function ApprovalDashboard() {
       setStatus("Submitting and verifying signature…");
       const result = await apiPost<{ requestStatus: Status }>(
         `/approvals/${selectedApproval.id}/vote`,
-        { decision, response },
+        { decision, reason: trimmedReason, response },
       );
 
       setStatus(
@@ -920,6 +927,7 @@ function Stamp({ status, size = "sm" }: { status: Status; size?: "sm" | "lg" }) 
     PENDING: "border-ember-500 text-ember-400 animate-pulse",
     APPROVED: "border-temper-400 text-temper-300 seal-strike",
     REJECTED: "border-rust-500 text-rust-400",
+    POSTPONED: "border-ember-500/60 text-ash-300",
     EXPIRED: "border-iron-600 text-ash-400",
   };
   return (
@@ -976,8 +984,8 @@ function ApprovalDetailsPanel({
 }: {
   approval: Approval;
   currentUser: MeResponse | null;
-  voting: "APPROVE" | "REJECT" | null;
-  onVote: (decision: "APPROVE" | "REJECT") => void;
+  voting: Decision | null;
+  onVote: (decision: Decision, reason: string) => void;
   onSecondDevice: () => void;
   isPendingTab: boolean;
 }) {
@@ -989,6 +997,7 @@ function ApprovalDetailsPanel({
 
   // Decide if the current user can vote right now
   const canVote = isPendingTab && !isRequester && !hasUserVoted && isEligibleRole;
+  const [reason, setReason] = useState("");
   const isActionResolved = approval.status !== "PENDING";
 
   return (
@@ -1109,11 +1118,25 @@ function ApprovalDetailsPanel({
       {/* Interactive buttons or informational notices */}
       <div className="border-t border-iron-800 pt-5 space-y-4">
         {canVote ? (
+          <div className="space-y-3">
+          <div>
+            <label htmlFor="decision-reason" className="mb-1 block text-xs text-ash-400">
+              Reason (signed with your decision; recommended for reject or postpone)
+            </label>
+            <input
+              id="decision-reason"
+              type="text"
+              maxLength={500}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="input"
+            />
+          </div>
           <div className="flex flex-col gap-3 sm:flex-row">
             <button
               type="button"
               disabled={voting !== null}
-              onClick={() => onVote("APPROVE")}
+              onClick={() => onVote("APPROVE", reason)}
               className="flex-1 rounded bg-temper-400 px-4 py-2 text-sm font-semibold text-iron-950 hover:bg-temper-300 disabled:opacity-50 transition-colors"
             >
               {voting === "APPROVE" ? "Casting approval…" : "Approve with passkey"}
@@ -1121,10 +1144,18 @@ function ApprovalDetailsPanel({
             <button
               type="button"
               disabled={voting !== null}
-              onClick={() => onVote("REJECT")}
+              onClick={() => onVote("REJECT", reason)}
               className="flex-1 rounded border border-rust-500/70 px-4 py-2 text-sm font-semibold text-rust-400 hover:bg-rust-500/10 disabled:opacity-50 transition-colors"
             >
               {voting === "REJECT" ? "Casting rejection…" : "Reject with passkey"}
+            </button>
+            <button
+              type="button"
+              disabled={voting !== null}
+              onClick={() => onVote("POSTPONE", reason)}
+              className="flex-1 rounded border border-iron-600 px-4 py-2 text-sm font-semibold text-ash-300 hover:bg-iron-800 disabled:opacity-50 transition-colors"
+            >
+              {voting === "POSTPONE" ? "Casting postponement…" : "Postpone with passkey"}
             </button>
             <button
               type="button"
@@ -1133,6 +1164,7 @@ function ApprovalDetailsPanel({
             >
               Approve on another device
             </button>
+          </div>
           </div>
         ) : (
           <div className="rounded bg-iron-900/60 p-4 border border-iron-800 text-xs text-ash-400 text-center">

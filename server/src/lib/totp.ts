@@ -36,7 +36,30 @@ export function checkTotpWithTolerance(
   toleranceMs: number = CLOCK_TOLERANCE_MS,
   now: number = Date.now(),
 ): boolean {
-  return [0, -toleranceMs, toleranceMs].some((offsetMs) =>
-    authenticator.clone({ epoch: now + offsetMs }).check(token, secret),
-  );
+  return matchTotpStep(token, secret, toleranceMs, now) !== null;
+}
+
+export const TOTP_STEP_SECONDS = 30;
+
+/**
+ * Like checkTotpWithTolerance, but returns the RFC 6238 time step (counter)
+ * the code was accepted for, or null. Callers persist the highest accepted
+ * step per credential and only accept strictly later steps, which is what
+ * prevents replaying a code (or an older one) within its validity window.
+ */
+export function matchTotpStep(
+  token: string,
+  secret: string,
+  toleranceMs: number = CLOCK_TOLERANCE_MS,
+  now: number = Date.now(),
+): number | null {
+  // Prefer the latest matching step so a legitimate code isn't pinned to an
+  // older bucket that a later code in the same window would then collide with.
+  for (const offsetMs of [toleranceMs, 0, -toleranceMs]) {
+    const epoch = now + offsetMs;
+    if (authenticator.clone({ epoch }).check(token, secret)) {
+      return Math.floor(epoch / 1000 / TOTP_STEP_SECONDS);
+    }
+  }
+  return null;
 }

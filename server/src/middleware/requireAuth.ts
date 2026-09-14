@@ -31,9 +31,20 @@ declare global {
 // authoritative check for Socket.io's handshake and join-time
 // re-validation, instead of maintaining a second, potentially-drifting copy
 // of "does this session still exist and hasn't expired".
-export async function isSessionLive(sessionId: string): Promise<boolean> {
-  const session = await prisma.session.findUnique({ where: { id: sessionId } });
-  return !!session && session.expiresAt >= new Date();
+//
+// A session is only live while its user is ACTIVE. Disabling or suspending
+// an account also deletes its sessions (server/src/routes/users.ts), but this
+// check is what makes the status authoritative on its own -- for REST, the
+// Socket.io handshake/join checks, and the revocation sweep alike.
+export async function isSessionLive(sessionId: string, expectedUserId?: string): Promise<boolean> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    include: { user: { select: { id: true, status: true } } },
+  });
+  if (!session || session.expiresAt < new Date()) return false;
+  if (session.user.status !== "ACTIVE") return false;
+  if (expectedUserId !== undefined && session.userId !== expectedUserId) return false;
+  return true;
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -50,7 +61,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  if (!(await isSessionLive(payload.sessionId))) {
+  if (!(await isSessionLive(payload.sessionId, payload.sub))) {
     res.status(401).json({ error: "Session has been revoked or expired" });
     return;
   }

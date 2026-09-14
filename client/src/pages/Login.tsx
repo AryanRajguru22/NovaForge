@@ -8,7 +8,7 @@ import type {
 import { apiPost, ApiError } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
 
-type Mode = "login" | "register" | "totp" | "recovery";
+type Mode = "login" | "register" | "enroll" | "totp" | "recovery";
 
 interface MeResponse {
   id: string;
@@ -20,7 +20,10 @@ interface MeResponse {
 export default function Login() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
-  const [mode, setMode] = useState<Mode>("login");
+  // An enrollment link (/login?enroll=<token>) issued by an administrator is
+  // the way to add a passkey to an existing account.
+  const [enrollToken] = useState(() => new URLSearchParams(window.location.search).get("enroll"));
+  const [mode, setMode] = useState<Mode>(enrollToken ? "enroll" : "login");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -53,6 +56,36 @@ export default function Login() {
     } finally {
       setBusy(false);
       setStatus(null);
+    }
+  }
+
+  async function handleEnroll(e: React.FormEvent) {
+    e.preventDefault();
+    if (!enrollToken) return;
+    setError(null);
+    setBusy(true);
+    try {
+      setStatus("Checking enrollment link…");
+      const { options, account } = await apiPost<{
+        options: PublicKeyCredentialCreationOptionsJSON;
+        account: { email: string; name: string };
+      }>("/auth/enroll/options", { token: enrollToken });
+
+      setStatus(`Waiting for your device to create a passkey for ${account.email}…`);
+      const response = await startRegistration(options);
+
+      setStatus("Verifying with server…");
+      await apiPost("/auth/enroll/verify", { token: enrollToken, response, deviceLabel: "Passkey" });
+
+      setEmail(account.email);
+      window.history.replaceState(null, "", window.location.pathname);
+      setStatus("Passkey added — you can now sign in.");
+      setMode("login");
+    } catch (err) {
+      setError(describeError(err));
+      setStatus(null);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -122,6 +155,7 @@ export default function Login() {
   const titles: Record<Mode, string> = {
     login: "Sign in with your passkey",
     register: "Register a new passkey",
+    enroll: "Set up your passkey",
     totp: "Sign in with your authenticator app",
     recovery: "Sign in with a recovery code",
   };
@@ -129,6 +163,7 @@ export default function Login() {
   const submitLabels: Record<Mode, string> = {
     login: "Sign in",
     register: "Register passkey",
+    enroll: "Create passkey",
     totp: "Verify code",
     recovery: "Use recovery code",
   };
@@ -136,6 +171,7 @@ export default function Login() {
   const handlers: Record<Mode, (e: React.FormEvent) => Promise<void>> = {
     login: handleLogin,
     register: handleRegister,
+    enroll: handleEnroll,
     totp: handleTotpLogin,
     recovery: handleRecoveryLogin,
   };
@@ -149,6 +185,11 @@ export default function Login() {
         </div>
 
         <form onSubmit={handlers[mode]} className="space-y-4">
+          {mode === "enroll" ? (
+            <p className="text-sm text-ash-300">
+              An administrator issued you a one-time enrollment link. Continue to create a passkey on this device.
+            </p>
+          ) : (
           <div>
             <label htmlFor="email" className="mb-1 block text-sm text-ash-300">
               Email
@@ -162,6 +203,7 @@ export default function Login() {
               className="input"
             />
           </div>
+          )}
 
           {mode === "register" && (
             <div>
@@ -205,7 +247,7 @@ export default function Login() {
               <input
                 id="recoveryCode"
                 type="text"
-                placeholder="XXXX-XXXX"
+                placeholder="XXXX-XXXX-XXXX-XXXX"
                 required
                 value={recoveryCode}
                 onChange={(e) => setRecoveryCode(e.target.value)}

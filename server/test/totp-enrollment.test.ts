@@ -6,6 +6,7 @@ import {
   apiRequest,
   createUserWithToken,
   addMockPasskey,
+  authenticatorFor,
   cleanupUsers,
   runSuffix,
 } from "./testServer.js";
@@ -19,6 +20,10 @@ import { prisma } from "../src/lib/prisma.js";
 // or plant a TOTP backdoor. /totp/verify now requires a fresh passkey
 // signature immediately before the write, mirroring the recovery-codes
 // options/generate step-up gate.
+//
+// Assertions come from a real software authenticator
+// (server/test/softAuthenticator.ts) and are verified by the unmodified
+// WebAuthn library -- there is no verification bypass.
 describe("TOTP enrollment requires a fresh passkey signature", () => {
   const email = `totp-enroll-${runSuffix}@example.com`;
   const noPasskeyEmail = `totp-enroll-nopasskey-${runSuffix}@example.com`;
@@ -83,7 +88,7 @@ describe("TOTP enrollment requires a fresh passkey signature", () => {
     const res = await apiRequest("/auth/totp/verify", {
       method: "POST",
       token,
-      body: { token: code, response: { id: `mock-cred-${userId}` } },
+      body: { token: code, response: authenticatorFor(userId).createAssertion(options.data.challenge) },
     });
     expect(res.status).toBe(200);
     expect(res.data.verified).toBe(true);

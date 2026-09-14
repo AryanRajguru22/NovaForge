@@ -3,6 +3,8 @@ import { httpServer, io, initEscalationService, initSocketSecurity, stopSocketSe
 import { prisma } from "../src/lib/prisma.js";
 import { signAccessToken } from "../src/lib/jwt.js";
 import { stopEscalationService } from "../src/lib/escalation.js";
+import { resetRateLimitBuckets } from "../src/middleware/rateLimit.js";
+import { SoftAuthenticator } from "./softAuthenticator.js";
 
 let baseUrl = "";
 
@@ -17,6 +19,9 @@ export const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)
 // adds no extra database load. Only a test file specifically exercising the
 // sweep (server/test/socket-security.test.ts) needs to pass a short value.
 export async function startTestServer(options: { sweepIntervalMs?: number } = {}): Promise<string> {
+  // Each test file starts with a clean in-memory rate-limit state; every
+  // request in the suite comes from 127.0.0.1.
+  resetRateLimitBuckets();
   initEscalationService(io);
   initSocketSecurity(io, { sweepIntervalMs: options.sweepIntervalMs });
   await new Promise<void>((resolve) => {
@@ -89,17 +94,57 @@ export async function createUserWithToken(overrides: {
   return { user, token };
 }
 
-/** Registers a mock passkey credential so a user can vote (BYPASS_WEBAUTHN=true skips real signature checks). */
-export async function addMockPasskey(userId: string) {
-  return prisma.credential.create({
+const authenticators = new Map<string, SoftAuthenticator>();
+
+/**
+ * Registers a real passkey for a user, backed by an in-memory software
+ * authenticator. There is no signature-verification bypass anywhere: every
+ * assertion a test submits is verified by the unmodified WebAuthn library.
+ */
+export async function addMockPasskey(userId: string, opts: { userVerified?: boolean } = {}) {
+  const authenticator = new SoftAuthenticator({ credentialId: `mock-cred-${userId}`, userVerified: opts.userVerified });
+  authenticators.set(userId, authenticator);
+  const credential = await prisma.credential.create({
     data: {
       userId,
       type: "PASSKEY",
-      credentialId: `mock-cred-${userId}`,
-      publicKey: "mock-public-key",
+      credentialId: authenticator.credentialId,
+      publicKey: authenticator.publicKeyBase64url,
       counter: 0,
       deviceLabel: "Test Authenticator",
     },
+  });
+  return Object.assign(credential, { authenticator });
+}
+
+export function authenticatorFor(userId: string): SoftAuthenticator {
+  const authenticator = authenticators.get(userId);
+  if (!authenticator) throw new Error(`No software authenticator registered for user ${userId}`);
+  return authenticator;
+}
+
+/**
+ * Mirrors the real client vote flow: request options for a specific decision
+ * (the server derives the WebAuthn challenge from the decision statement),
+ * sign that challenge with the voter's authenticator, then submit.
+ */
+export async function castVote(
+  requestId: string,
+  voter: { id: string; token: string },
+  decision: "APPROVE" | "REJECT" | "POSTPONE",
+  reason?: string,
+) {
+  const options = await apiRequest(`/approvals/${requestId}/options`, {
+    method: "POST",
+    token: voter.token,
+    body: { decision, reason },
+  });
+  if (options.status !== 200) return options;
+  const response = authenticatorFor(voter.id).createAssertion(options.data.challenge);
+  return apiRequest(`/approvals/${requestId}/vote`, {
+    method: "POST",
+    token: voter.token,
+    body: { decision, reason, response },
   });
 }
 
@@ -122,6 +167,7 @@ export async function cleanupUsers(emails: string[]) {
   await prisma.sensitiveAction.deleteMany({ where: { requestedBy: { email: { in: emails } } } });
   await prisma.credential.deleteMany({ where: { user: { email: { in: emails } } } });
   await prisma.session.deleteMany({ where: { user: { email: { in: emails } } } });
+  await prisma.enrollmentToken.deleteMany({ where: { user: { email: { in: emails } } } });
 }
 
 export async function cleanupPolicies(actionTypes: string[]) {

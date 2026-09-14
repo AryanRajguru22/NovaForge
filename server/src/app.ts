@@ -22,12 +22,27 @@ import { actionsRouter } from "./routes/actions.js";
 import { approvalsRouter } from "./routes/approvals.js";
 import { auditRouter } from "./routes/audit.js";
 import { usersRouter } from "./routes/users.js";
+import { internalRouter } from "./routes/internal.js";
+import { serviceAccountsRouter } from "./routes/serviceAccounts.js";
+import { requestContextMiddleware } from "./lib/requestContext.js";
+import { getPublicJwks, IdentityKeysUnavailableError } from "./lib/identityKeys.js";
 import { initEscalationService } from "./lib/escalation.js";
 import { initSocketSecurity, stopSocketSecurity } from "./lib/socketSecurity.js";
 
 export { initEscalationService, initSocketSecurity, stopSocketSecurity };
 
 export const app = express();
+// Behind a reverse proxy (nginx, Render's edge) req.ip is the proxy's address
+// unless Express is told how many proxy hops to trust. Without this, every
+// client shares one IP for rate limiting. Set TRUST_PROXY to the hop count
+// (e.g. "1") or an Express trust-proxy value for the actual deployment; it is
+// deliberately not enabled by default, since trusting X-Forwarded-For from a
+// directly exposed server would let clients choose their own IP.
+if (process.env.TRUST_PROXY) {
+  const value = process.env.TRUST_PROXY;
+  app.set("trust proxy", /^\d+$/.test(value) ? Number(value) : value === "true" ? true : value);
+}
+app.use(requestContextMiddleware);
 app.use(cors({ origin: env.rpOrigin, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
@@ -35,6 +50,23 @@ app.use(cookieParser());
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+// Public verification keys for identity assertions issued to relying
+// services. Contains public keys only.
+function serveJwks(_req: express.Request, res: express.Response): void {
+  try {
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.json(getPublicJwks());
+  } catch (err) {
+    if (err instanceof IdentityKeysUnavailableError) {
+      res.status(503).json({ error: "Identity keys are not configured" });
+      return;
+    }
+    throw err;
+  }
+}
+app.get("/.well-known/jwks.json", serveJwks);
+app.get("/api/.well-known/jwks.json", serveJwks);
 
 // Whether a client build is sitting next to this file — true for the
 // combined Render deploy image, false for local dev and for the
@@ -58,6 +90,8 @@ apiRouter.use("/actions", actionsRouter);
 apiRouter.use("/approvals", approvalsRouter);
 apiRouter.use("/audit", auditRouter);
 apiRouter.use("/users", usersRouter);
+apiRouter.use("/service-accounts", serviceAccountsRouter);
+apiRouter.use("/internal", internalRouter);
 // Bare mount is only for docker-compose's server container, where nginx has
 // already stripped the /api prefix before proxying here — a client isn't
 // served from this same process, so there's no risk of an API resource name

@@ -4,7 +4,7 @@ import type { Role } from "@prisma/client";
 import { prisma } from "./prisma.js";
 import { verifyAccessToken } from "./jwt.js";
 import { isSessionLive } from "../middleware/requireAuth.js";
-import { getApprovalAccessContext } from "./approvalAccess.js";
+import { canViewApprovalRecord } from "./approvalAccess.js";
 
 // Socket.io's own room-membership mechanism is not, and must never be
 // treated as, an authorization boundary: a room is just a string key, and
@@ -108,7 +108,7 @@ export function initSocketSecurity(io: Server, options: { sweepIntervalMs?: numb
       // JWT validity alone is never sufficient -- the same principle
       // requireAuth already enforces for every REST request (see the
       // comment on isSessionLive, server/src/middleware/requireAuth.ts).
-      if (!(await isSessionLive(payload.sessionId))) {
+      if (!(await isSessionLive(payload.sessionId, payload.sub))) {
         next(new Error("Authentication required"));
         return;
       }
@@ -163,7 +163,7 @@ export function initSocketSecurity(io: Server, options: { sweepIntervalMs?: numb
 
         const approvalRequest = await prisma.approvalRequest.findUnique({
           where: { id: requestId },
-          include: { action: true, policy: true },
+          include: { action: true, policy: true, votes: { select: { approverId: true } } },
         });
         if (!approvalRequest) {
           // A nonexistent id is denied identically to an existing-but-
@@ -183,8 +183,16 @@ export function initSocketSecurity(io: Server, options: { sweepIntervalMs?: numb
           return;
         }
 
-        const access = getApprovalAccessContext(user.id, user.role, approvalRequest.action, approvalRequest.policy);
-        if (!access.isRequester && !access.isEligibleRole) {
+        // Same rule as REST's GET /actions/:id (server/src/lib/approvalAccess.ts),
+        // so live events never reveal more than the detail endpoint would.
+        const allowed = canViewApprovalRecord({
+          userId: user.id,
+          role: user.role,
+          action: approvalRequest.action,
+          policy: approvalRequest.policy,
+          voterIds: approvalRequest.votes.map((v) => v.approverId),
+        });
+        if (!allowed) {
           // A re-check (the client re-emitting join-challenge for a room it
           // may already be in -- e.g. after its own role or the policy
           // changed) must be able to *revoke* membership, not just refuse to

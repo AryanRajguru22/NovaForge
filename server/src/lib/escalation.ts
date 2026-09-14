@@ -1,5 +1,5 @@
 import { prisma } from "./prisma.js";
-import { appendAuditLog } from "./audit.js";
+import { appendAuditLog, auditedTransaction } from "./audit.js";
 
 let ioInstance: any = null;
 let intervalHandle: NodeJS.Timeout | null = null;
@@ -55,8 +55,8 @@ export async function checkEscalations() {
         if (fallbackPolicy) {
           const newExpiresAt = new Date(Date.now() + fallbackPolicy.escalationTimeoutSec * 1000);
 
-          let success = false;
-          await prisma.$transaction(async (tx) => {
+          // The reassignment and its audit events commit together or not at all.
+          const success = await auditedTransaction(async (tx) => {
             const updated = await tx.approvalRequest.updateMany({
               where: {
                 id,
@@ -67,34 +67,34 @@ export async function checkEscalations() {
                 expiresAt: newExpiresAt,
               },
             });
-            success = updated.count === 1;
+            if (updated.count !== 1) return false;
+
+            await appendAuditLog(tx, {
+              entityType: "ApprovalRequest",
+              entityId: id,
+              event: "ESCALATION_TRIGGERED",
+              metadata: {
+                previousPolicyId: policy.id,
+                fallbackPolicyId: fallbackPolicy.id,
+              },
+            });
+
+            await appendAuditLog(tx, {
+              entityType: "ApprovalRequest",
+              entityId: id,
+              event: "FALLBACK_POLICY_ASSIGNED",
+              metadata: {
+                fallbackPolicyId: fallbackPolicy.id,
+                expiresAt: newExpiresAt,
+              },
+            });
+            return true;
           });
 
           if (!success) {
             console.log(`Request ${id} is no longer PENDING. Skipping escalation.`);
             continue;
           }
-
-          // Audit logs
-          await appendAuditLog({
-            entityType: "ApprovalRequest",
-            entityId: id,
-            event: "ESCALATION_TRIGGERED",
-            metadata: {
-              previousPolicyId: policy.id,
-              fallbackPolicyId: fallbackPolicy.id,
-            },
-          });
-
-          await appendAuditLog({
-            entityType: "ApprovalRequest",
-            entityId: id,
-            event: "FALLBACK_POLICY_ASSIGNED",
-            metadata: {
-              fallbackPolicyId: fallbackPolicy.id,
-              expiresAt: newExpiresAt,
-            },
-          });
 
           // Socket event
           if (ioInstance) {
@@ -123,8 +123,7 @@ export async function checkEscalations() {
 }
 
 async function expireRequest(requestId: string, actionId: string) {
-  let success = false;
-  await prisma.$transaction(async (tx) => {
+  const success = await auditedTransaction(async (tx) => {
     const updated = await tx.approvalRequest.updateMany({
       where: {
         id: requestId,
@@ -132,34 +131,31 @@ async function expireRequest(requestId: string, actionId: string) {
       },
       data: { status: "EXPIRED" },
     });
-    if (updated.count === 1) {
-      await tx.sensitiveAction.updateMany({
-        where: {
-          id: actionId,
-          status: "PENDING",
-        },
-        data: { status: "EXPIRED" },
-      });
-      success = true;
-    }
+    if (updated.count !== 1) return false;
+    await tx.sensitiveAction.updateMany({
+      where: {
+        id: actionId,
+        status: "PENDING",
+      },
+      data: { status: "EXPIRED" },
+    });
+    await appendAuditLog(tx, {
+      entityType: "ApprovalRequest",
+      entityId: requestId,
+      event: "REQUEST_EXPIRED",
+    });
+    await appendAuditLog(tx, {
+      entityType: "SensitiveAction",
+      entityId: actionId,
+      event: "ACTION_EXPIRED",
+    });
+    return true;
   });
 
   if (!success) {
     console.log(`Request ${requestId} is no longer PENDING. Skipping expiration.`);
     return;
   }
-
-  await appendAuditLog({
-    entityType: "ApprovalRequest",
-    entityId: requestId,
-    event: "REQUEST_EXPIRED",
-  });
-
-  await appendAuditLog({
-    entityType: "SensitiveAction",
-    entityId: actionId,
-    event: "ACTION_EXPIRED",
-  });
 
   if (ioInstance) {
     ioInstance.to(requestId).emit("status-update", {

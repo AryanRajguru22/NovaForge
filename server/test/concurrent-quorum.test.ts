@@ -9,6 +9,7 @@ import {
   cleanupUsers,
   cleanupPolicies,
   runSuffix,
+  castVote as castSignedVote,
 } from "./testServer.js";
 import { prisma } from "../src/lib/prisma.js";
 
@@ -27,25 +28,11 @@ import { prisma } from "../src/lib/prisma.js";
 // fires genuinely concurrent HTTP requests via Promise.all -- never two
 // sequential awaits -- specifically to exercise that lock/race window.
 
-function mockVoteResponse(credentialId: string, signature: string) {
-  return {
-    id: credentialId,
-    response: {
-      clientDataJSON: "mock-client-data",
-      authenticatorData: "mock-authenticator-data",
-      signature,
-    },
-  };
-}
-
-async function castVote(requestId: string, voter: { id: string; token: string }, decision: "APPROVE" | "REJECT", signature: string) {
-  const options = await apiRequest(`/approvals/${requestId}/options`, { method: "POST", token: voter.token });
-  if (options.status !== 200) return options;
-  return apiRequest(`/approvals/${requestId}/vote`, {
-    method: "POST",
-    token: voter.token,
-    body: { decision, response: mockVoteResponse(`mock-cred-${voter.id}`, signature) },
-  });
+// The trailing "signature" argument is kept only so existing call sites read
+// unchanged; the real signature is produced by the voter's software
+// authenticator over the server's decision-bound challenge.
+async function castVote(requestId: string, voter: { id: string; token: string }, decision: "APPROVE" | "REJECT", _signature?: string) {
+  return castSignedVote(requestId, voter, decision);
 }
 
 async function auditCount(entityType: string, entityId: string, event: string) {

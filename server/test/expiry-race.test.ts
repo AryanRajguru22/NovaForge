@@ -1,14 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { startTestServer, stopTestServer, apiRequest, createUserWithToken, addMockPasskey, cleanupUsers, cleanupPolicies, runSuffix } from "./testServer.js";
+import { startTestServer, stopTestServer, apiRequest, createUserWithToken, addMockPasskey, cleanupUsers, cleanupPolicies, runSuffix, castVote as castSignedVote } from "./testServer.js";
+import { computeSubjectDigest } from "../src/lib/approvalSignature.js";
 import { prisma } from "../src/lib/prisma.js";
 import { checkEscalations } from "../src/lib/escalation.js";
-
-function mockVoteResponse(credentialId: string, signature: string) {
-  return {
-    id: credentialId,
-    response: { clientDataJSON: "mock-client-data", authenticatorData: "mock-authenticator-data", signature },
-  };
-}
 
 describe("P0-2: vote vs. expiry/escalation race", () => {
   const emails = [`expiry-creator-${runSuffix}@example.com`, `expiry-approver-${runSuffix}@example.com`];
@@ -70,22 +64,14 @@ describe("P0-2: vote vs. expiry/escalation race", () => {
   // resurrected EXPIRED request, never a 500) holds either way.
   it("TEST 7: a request already past its expiry cannot be resurrected by a vote racing the escalation check", async () => {
     const action = await prisma.sensitiveAction.create({
-      data: { type: actionType, payload: { amount: 7 }, requestedById: creator.id },
+      data: { type: actionType, payload: { amount: 7 }, payloadDigest: computeSubjectDigest(actionType, { amount: 7 }), requestedById: creator.id },
     });
     const policy = await prisma.approvalPolicy.findUniqueOrThrow({ where: { actionType } });
     const request = await prisma.approvalRequest.create({
       data: { actionId: action.id, policyId: policy.id, expiresAt: new Date(Date.now() - 1000) },
     });
 
-    const castVote = async () => {
-      const options = await apiRequest(`/approvals/${request.id}/options`, { method: "POST", token: approver.token });
-      if (options.status !== 200) return options;
-      return apiRequest(`/approvals/${request.id}/vote`, {
-        method: "POST",
-        token: approver.token,
-        body: { decision: "APPROVE", response: mockVoteResponse(`mock-cred-${approver.id}`, "t7-sig") },
-      });
-    };
+    const castVote = () => castSignedVote(request.id, approver, "APPROVE");
 
     const [voteResult] = await Promise.all([castVote(), checkEscalations()]);
 
@@ -203,27 +189,13 @@ describe("P0-2: vote vs. escalation's fallback-policy reassignment race", () => 
 
   it("a vote racing a concurrent fallback-policy reassignment always evaluates ONE coherent policy, never a hybrid of both", async () => {
     const action = await prisma.sensitiveAction.create({
-      data: { type: primaryType, payload: { amount: 1 }, requestedById: creator.id },
+      data: { type: primaryType, payload: { amount: 1 }, payloadDigest: computeSubjectDigest(primaryType, { amount: 1 }), requestedById: creator.id },
     });
     const request = await prisma.approvalRequest.create({
       data: { actionId: action.id, policyId: primaryPolicy.id, expiresAt: new Date(Date.now() + 60_000) },
     });
 
-    const castVote = async () => {
-      const options = await apiRequest(`/approvals/${request.id}/options`, { method: "POST", token: approver.token });
-      if (options.status !== 200) return options;
-      return apiRequest(`/approvals/${request.id}/vote`, {
-        method: "POST",
-        token: approver.token,
-        body: {
-          decision: "APPROVE",
-          response: {
-            id: `mock-cred-${approver.id}`,
-            response: { clientDataJSON: "mock-client-data", authenticatorData: "mock-authenticator-data", signature: "policy-race-sig" },
-          },
-        },
-      });
-    };
+    const castVote = () => castSignedVote(request.id, approver, "APPROVE");
 
     const [voteResult] = await Promise.all([
       castVote(),

@@ -15,6 +15,16 @@ enum Role {
   MEMBER
 }
 
+// Account lifecycle state shared by human users and service accounts. Only
+// ACTIVE principals can authenticate, hold a live session, or be issued
+// identity assertions (server/src/middleware/requireAuth.ts isSessionLive,
+// server/src/lib/serviceAuth.ts).
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
 enum CredentialType {
   PASSKEY
   TOTP
@@ -31,49 +41,89 @@ enum ActionStatus {
   PENDING
   APPROVED
   REJECTED
+  POSTPONED
   EXPIRED
 }
 
 enum VoteDecision {
   APPROVE
   REJECT
+  POSTPONE
 }
 
 model User {
-  id                       String   @id @default(uuid())
-  email                    String   @unique
+  id                       String        @id @default(uuid())
+  email                    String        @unique
   name                     String
-  role                     Role     @default(MEMBER)
-  riskTier                 Int      @default(0)
+  role                     Role          @default(MEMBER)
+  riskTier                 Int           @default(0)
   // Only meaningful for WEIGHTED approval policies -- ApprovalPolicy.minApprovals
   // is reinterpreted as the weight threshold for that quorum type, and a vote's
   // weight is this field on the voting user at the time they vote.
-  voteWeight               Int      @default(1)
-  totpLoginEnabled         Boolean  @default(true)
-  recoveryCodeLoginEnabled Boolean  @default(true)
-  createdAt                DateTime @default(now())
+  voteWeight               Int           @default(1)
+  totpLoginEnabled         Boolean       @default(true)
+  recoveryCodeLoginEnabled Boolean       @default(true)
+  status                   AccountStatus @default(ACTIVE)
+  statusChangedAt          DateTime?
+  createdAt                DateTime      @default(now())
 
   credentials       Credential[]
   sessions          Session[]
   requestedActions  SensitiveAction[] @relation("RequestedBy")
   votes             ApprovalVote[]
   auditEvents       AuditLog[]
+  enrollmentTokens  EnrollmentToken[] @relation("EnrollmentTarget")
+  issuedEnrollments EnrollmentToken[] @relation("EnrollmentIssuer")
 }
 
 model Credential {
-  id           String         @id @default(uuid())
-  userId       String
-  user         User           @relation(fields: [userId], references: [id])
-  type         CredentialType
-  credentialId String?        @unique // base64url WebAuthn credential ID (passkeys only)
-  publicKey    String?
-  counter      BigInt         @default(0)
-  deviceLabel  String?
-  secret       String? // TOTP secret / hashed recovery code, never the raw passkey key material
-  createdAt    DateTime       @default(now())
-  lastUsedAt   DateTime?
+  id               String         @id @default(uuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id])
+  type             CredentialType
+  credentialId     String?        @unique // base64url WebAuthn credential ID (passkeys only)
+  publicKey        String?
+  counter          BigInt         @default(0)
+  deviceLabel      String?
+  secret           String? // TOTP secret / hashed recovery code, never the raw passkey key material
+  createdAt        DateTime       @default(now())
+  lastUsedAt       DateTime?
+  // TOTP only: the RFC 6238 time step of the most recently accepted code.
+  // A code is only accepted for a strictly later step, so the same code
+  // (or an older one) can never be replayed inside its validity window.
+  totpLastUsedStep BigInt?
 
   @@index([userId])
+}
+
+// Single-use, expiring enrollment capability issued by a super admin (or the
+// bootstrap script). This is the only way to attach a first/additional
+// passkey to an EXISTING account -- knowing an account's email is never
+// sufficient. Only a SHA-256 hash of the high-entropy token is stored.
+model EnrollmentToken {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation("EnrollmentTarget", fields: [userId], references: [id])
+  tokenHash   String    @unique
+  createdById String?
+  createdBy   User?     @relation("EnrollmentIssuer", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  usedAt      DateTime?
+  revokedAt   DateTime?
+
+  @@index([userId])
+}
+
+// Persistent per-subject throttle for guessable fallback factors (TOTP,
+// recovery codes). Row-locked on every attempt so concurrent guesses can't
+// race past the limit. Passkey login is deliberately never throttled here.
+model AuthThrottle {
+  subject     String    @id
+  attempts    Int       @default(0)
+  lockLevel   Int       @default(0)
+  lockedUntil DateTime?
+  updatedAt   DateTime  @updatedAt
 }
 
 model Session {
@@ -86,55 +136,94 @@ model Session {
   expiresAt      DateTime
   lastVerifiedAt DateTime @default(now())
 
+  // P0-4 refresh-token rotation state. Session IS the refresh-token family
+  // (server/src/lib/refreshRotation.ts) -- no separate RefreshToken table --
+  // currentRefreshTokenId is the jti a presented refresh JWT must carry to
+  // rotate; previousRefreshTokenId + rotatedAt together define the short
+  // grace window that lets two near-simultaneous legitimate requests (e.g.
+  // two browser tabs) both succeed without being mistaken for replay.
+  //
+  // Nullable, permanently, by design -- not just for migration safety.
+  // Every session this application creates always sets a real
+  // currentRefreshTokenId at login (server/src/routes/auth.ts, issueSession),
+  // so NULL only ever occurs on rows that predate this feature. That's
+  // deliberately left alone rather than backfilled with an invented value:
+  // NULL can never equal a presented jti in SQL's own comparison semantics,
+  // so a pre-P0-4 session's first refresh attempt after this ships falls
+  // straight through the existing rotate -> grace -> replay logic with zero
+  // special-case code and is correctly treated as replay (no current or
+  // previous token to match), forcing exactly the re-authentication the
+  // migration strategy calls for -- not a silent bypass, not a crash.
+  currentRefreshTokenId  String?
+  previousRefreshTokenId String?
+  rotatedAt              DateTime?
+
   @@index([userId])
 }
 
 model SensitiveAction {
-  id            String            @id @default(uuid())
+  id            String       @id @default(uuid())
   type          String
   payload       Json
-  status        ActionStatus      @default(PENDING)
+  status        ActionStatus @default(PENDING)
   requestedById String
-  requestedBy   User              @relation("RequestedBy", fields: [requestedById], references: [id])
-  createdAt     DateTime          @default(now())
+  requestedBy   User         @relation("RequestedBy", fields: [requestedById], references: [id])
+  createdAt     DateTime     @default(now())
+  // "sha256:<hex>" of the RFC 8785 canonical JSON of {type, payload}, fixed
+  // at creation (server/src/lib/approvalSignature.ts). Every approval
+  // decision signs this digest. type/payload/payloadDigest are immutable at
+  // the database level (trigger in the P0 hardening migration). NULL only on
+  // rows created before this column existed; those cannot be voted on.
+  payloadDigest String?
 
   approvalRequest ApprovalRequest?
 }
 
 model ApprovalPolicy {
-  id                  String     @id @default(uuid())
-  actionType          String     @unique
-  quorumType          QuorumType
-  minApprovals        Int
-  eligibleRoles       Role[]
-  fallbackPolicyId    String?
-  escalationTimeoutSec Int       @default(300)
+  id                   String     @id @default(uuid())
+  actionType           String     @unique
+  quorumType           QuorumType
+  minApprovals         Int
+  eligibleRoles        Role[]
+  fallbackPolicyId     String?
+  escalationTimeoutSec Int        @default(300)
 
   approvalRequests ApprovalRequest[]
 }
 
 model ApprovalRequest {
-  id        String       @id @default(uuid())
-  actionId  String       @unique
+  id        String          @id @default(uuid())
+  actionId  String          @unique
   action    SensitiveAction @relation(fields: [actionId], references: [id])
   policyId  String
-  policy    ApprovalPolicy @relation(fields: [policyId], references: [id])
-  status    ActionStatus @default(PENDING)
+  policy    ApprovalPolicy  @relation(fields: [policyId], references: [id])
+  status    ActionStatus    @default(PENDING)
   expiresAt DateTime
 
   votes ApprovalVote[]
 }
 
 model ApprovalVote {
-  id         String          @id @default(uuid())
-  requestId  String
-  request    ApprovalRequest @relation(fields: [requestId], references: [id])
-  approverId String
-  approver   User            @relation(fields: [approverId], references: [id])
-  decision   VoteDecision
-  signature  String // raw WebAuthn assertion signature, ties the vote to the approver's device key
-  deviceId   String
-  timestamp  DateTime        @default(now())
+  id                  String          @id @default(uuid())
+  requestId           String
+  request             ApprovalRequest @relation(fields: [requestId], references: [id])
+  approverId          String
+  approver            User            @relation(fields: [approverId], references: [id])
+  decision            VoteDecision
+  signature           String // raw WebAuthn assertion signature, ties the vote to the approver's device key
+  deviceId            String
+  timestamp           DateTime        @default(now())
+  reason              String?
+  // Full, independently re-verifiable approval evidence
+  // (server/src/lib/approvalSignature.ts verifyStoredVoteEvidence). The
+  // WebAuthn challenge is SHA-256(signedStatement), so the signature covers
+  // the decision, reason, request, approver and subject digest. NULL only on
+  // votes recorded before decision binding existed.
+  signedStatement     String?
+  statementHash       String?
+  clientDataJSON      String?
+  authenticatorData   String?
+  credentialPublicKey String?
 
   // An approver may cast at most one vote per approval request. This used to
   // be enforced only by an application-level findFirst-then-create check
@@ -147,12 +236,12 @@ model ApprovalVote {
 }
 
 model AuditLog {
-  id         String   @id @default(uuid())
-  entityType String
-  entityId   String
-  event      String
-  actorId    String?
-  actor      User?    @relation(fields: [actorId], references: [id])
+  id             String   @id @default(uuid())
+  entityType     String
+  entityId       String
+  event          String
+  actorId        String?
+  actor          User?    @relation(fields: [actorId], references: [id])
   // Frozen copy of actorId at write time, with no foreign key. actorId is
   // ON DELETE SET NULL so joins/display stay tidy after a user is deleted,
   // but that means actorId is not safe to hash: deleting a user would
@@ -160,10 +249,55 @@ model AuditLog {
   // hash chain for an event that isn't tampering. actorIdAtWrite is what
   // the hash actually covers, and nothing ever updates it after insert.
   actorIdAtWrite String?
-  metadata   Json?
-  timestamp  DateTime @default(now())
-  prevHash   String?
-  hash       String
+  metadata       Json?
+  timestamp      DateTime @default(now())
+  prevHash       String?
+  hash           String
+  // Position in the single global chain. Assigned under the AuditChainHead
+  // row lock and enforced by a database trigger (seq = head.seq + 1,
+  // prevHash = head.hash), so two writers can never claim the same
+  // predecessor. hashVersion 1 = legacy rows (pre-hardening formula, not
+  // covering seq/timestamp); 2 = current formula (server/src/lib/audit.ts).
+  seq            BigInt   @unique
+  hashVersion    Int      @default(1)
+  correlationId  String?
 
   @@index([entityType, entityId])
+}
+
+// Exactly one row (id = 1): the current tip of the audit chain. Updated only
+// by the AuditLog insert trigger; direct updates/deletes are rejected.
+model AuditChainHead {
+  id        Int      @id
+  seq       BigInt
+  hash      String
+  updatedAt DateTime @default(now())
+}
+
+// Non-human principal (e.g. a downstream relying service). Authenticates
+// with a ServiceCredential, never with a user session, and can only do what
+// its scopes allow. `audience` is the aud claim of identity assertions minted
+// for it -- derived from the authenticated service, never caller-chosen.
+model ServiceAccount {
+  id          String              @id @default(uuid())
+  name        String              @unique
+  audience    String              @unique
+  status      AccountStatus       @default(ACTIVE)
+  scopes      String[]
+  createdAt   DateTime            @default(now())
+  createdById String?
+  credentials ServiceCredential[]
+}
+
+model ServiceCredential {
+  id               String         @id @default(uuid())
+  serviceAccountId String
+  serviceAccount   ServiceAccount @relation(fields: [serviceAccountId], references: [id])
+  secretHash       String
+  createdAt        DateTime       @default(now())
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  lastUsedAt       DateTime?
+
+  @@index([serviceAccountId])
 }

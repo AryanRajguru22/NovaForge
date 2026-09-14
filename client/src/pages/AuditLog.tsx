@@ -26,6 +26,8 @@ interface AuditEntry {
 interface VerifyResult {
   valid: boolean;
   brokenAt?: string;
+  checkedRows?: number;
+  issues?: { kind: string; seq: string; id?: string; detail: string }[];
 }
 
 function short(hash: string | null): string {
@@ -87,6 +89,13 @@ export default function AuditLog() {
     try {
       setVerify(await apiGet<VerifyResult>("/audit/verify"));
     } catch (err) {
+      // The server answers 409 when it detects tampering; that's a result to
+      // show, not a request failure.
+      if (err instanceof ApiError && err.status === 409) {
+        setVerify({ valid: false });
+        setError("Integrity violation detected. See the server log / GET /audit/verify for every issue found.");
+        return;
+      }
       setError(describeError(err));
     } finally {
       setVerifying(false);
@@ -130,7 +139,7 @@ export default function AuditLog() {
           <Message error={!verify.valid}>
             {verify.valid
               ? "Chain intact — every row's hash matches its recorded predecessor."
-              : `Chain broken at row ${verify.brokenAt} — a row's hash no longer matches what its successor recorded.`}
+              : "Chain integrity violation — modified, deleted, reordered or injected events were detected."}
           </Message>
         )}
 

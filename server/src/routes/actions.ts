@@ -1,14 +1,18 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { requireTrust } from "../middleware/requireTrust.js";
-import { appendAuditLog } from "../lib/audit.js";
+import { appendAuditLog, auditedTransaction } from "../lib/audit.js";
+import { canonicalJson, toJsonValue } from "../lib/canonicalJson.js";
+import { computeSubjectDigest } from "../lib/approvalSignature.js";
+import { canViewApprovalRecord } from "../lib/approvalAccess.js";
 
 export const actionsRouter = Router();
 
 const actionCreateSchema = z.object({
-  type: z.string().trim().min(1, "Action type is required"),
+  type: z.string().trim().min(1, "Action type is required").max(200),
   payload: z.unknown().refine((val) => val !== undefined && val !== null, {
     message: "Payload is required",
   }),
@@ -22,7 +26,12 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
     return;
   }
 
-  const { type, payload } = parsed.data;
+  const { type } = parsed.data;
+  // Normalize to plain JSON first, so the digest is computed over exactly
+  // the value that is stored (and later re-read and re-digested at vote time).
+  const payload = toJsonValue(parsed.data.payload);
+  const payloadDigest = computeSubjectDigest(type, payload);
+  const payloadText = canonicalJson(payload);
 
   try {
     // Resolve matching ApprovalPolicy
@@ -35,15 +44,22 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
       return;
     }
 
-    // Create action and linked approval request atomically
-    const { action, approvalRequest } = await prisma.$transaction(async (tx) => {
-      const newAction = await tx.sensitiveAction.create({
-        data: {
-          type,
-          payload: payload as any,
-          requestedById: req.user!.id,
-        },
-      });
+    // Action, approval request and audit event commit atomically.
+    const { action, approvalRequest } = await auditedTransaction(async (tx) => {
+      // Raw INSERT with an explicit ::jsonb cast of the canonical text: Prisma
+      // 5's Json write path keeps only 16 significant digits of a number, so
+      // e.g. a risk score of 0.38331432302637536 would be stored as
+      // 0.3833143230263754 -- approvers would then see (and sign) something
+      // other than what was requested. Postgres parses the text exactly.
+      const newActionId = randomUUID();
+      await tx.$executeRaw`
+        INSERT INTO "SensitiveAction" ("id", "type", "payload", "payloadDigest", "requestedById")
+        VALUES (${newActionId}, ${type}, ${payloadText}::jsonb, ${payloadDigest}, ${req.user!.id})`;
+      const newAction = await tx.sensitiveAction.findUniqueOrThrow({ where: { id: newActionId } });
+      // Fail closed unless the payload as stored reproduces the digest.
+      if (computeSubjectDigest(newAction.type, newAction.payload) !== payloadDigest) {
+        throw new Error(`Stored payload for action ${newActionId} does not reproduce its subject digest`);
+      }
 
       const newRequest = await tx.approvalRequest.create({
         data: {
@@ -53,21 +69,21 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
         },
       });
 
-      return { action: newAction, approvalRequest: newRequest };
-    });
+      await appendAuditLog(tx, {
+        entityType: "SensitiveAction",
+        entityId: newAction.id,
+        event: "ACTION_CREATED",
+        actorId: req.user!.id,
+        metadata: {
+          type: newAction.type,
+          policyId: policy.id,
+          approvalRequestId: newRequest.id,
+          expiresAt: newRequest.expiresAt,
+          payloadDigest,
+        },
+      });
 
-    // Record action creation event in the audit log
-    await appendAuditLog({
-      entityType: "SensitiveAction",
-      entityId: action.id,
-      event: "ACTION_CREATED",
-      actorId: req.user!.id,
-      metadata: {
-        type: action.type,
-        policyId: policy.id,
-        approvalRequestId: approvalRequest.id,
-        expiresAt: approvalRequest.expiresAt,
-      },
+      return { action: newAction, approvalRequest: newRequest };
     });
 
     res.status(201).json({
@@ -75,6 +91,7 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
         id: action.id,
         type: action.type,
         payload: action.payload,
+        payloadDigest: action.payloadDigest,
         status: action.status,
         createdAt: action.createdAt,
       },
@@ -120,11 +137,24 @@ actionsRouter.get("/", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// GET /actions/:id - Retrieve action details, approval request, policy, and votes
+// GET /actions/:id - Retrieve action details, approval request, policy, and votes.
+//
+// Authorized server-side with the same rule the live Socket.io channel uses
+// (server/src/lib/approvalAccess.ts canViewApprovalRecord). A caller without
+// a legitimate relationship gets exactly the same 404 as for an id that
+// doesn't exist, so the response reveals nothing -- not the payload, votes or
+// signatures, and not even whether the action exists.
 actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
   const { id } = req.params;
+  const notFound = () => res.status(404).json({ error: "Action not found" });
 
   try {
+    const viewer = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { id: true, role: true } });
+    if (!viewer) {
+      notFound();
+      return;
+    }
+
     const action = await prisma.sensitiveAction.findUnique({
       where: { id },
       include: {
@@ -157,8 +187,17 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
       },
     });
 
-    if (!action) {
-      res.status(404).json({ error: "Action not found" });
+    if (
+      !action ||
+      !canViewApprovalRecord({
+        userId: viewer.id,
+        role: viewer.role,
+        action,
+        policy: action.approvalRequest?.policy ?? null,
+        voterIds: action.approvalRequest?.votes.map((v) => v.approverId) ?? [],
+      })
+    ) {
+      notFound();
       return;
     }
 
@@ -167,6 +206,7 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
         id: action.id,
         type: action.type,
         payload: action.payload,
+        payloadDigest: action.payloadDigest,
         status: action.status,
         createdAt: action.createdAt,
         requestedBy: action.requestedBy,
@@ -179,7 +219,10 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
         votes: action.approvalRequest.votes.map((v) => ({
           id: v.id,
           decision: v.decision,
+          reason: v.reason,
           signature: v.signature,
+          signedStatement: v.signedStatement,
+          statementHash: v.statementHash,
           deviceId: v.deviceId,
           timestamp: v.timestamp,
           approver: v.approver,
