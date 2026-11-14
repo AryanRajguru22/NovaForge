@@ -12,7 +12,7 @@ import { rateLimit } from "../middleware/rateLimit.js";
 import { IdentityKeysUnavailableError } from "../lib/identityKeys.js";
 import { AUTH_CODE_TTL_SEC, SUPPORTED_SCOPES, discoveryDocument, issuer } from "../lib/oauth/config.js";
 import { authenticateClient } from "../lib/oauth/clientAuth.js";
-import { hasAnyAccess, isPermitted, isValidResource, loadAccess, PERMISSION_KEY } from "../lib/oauth/rbac.js";
+import { hasAnyAccess, isPermitted, isValidResource, loadAccess, PERMISSION_KEY, type AccessContext } from "../lib/oauth/rbac.js";
 import {
   claimsForScope,
   isWellFormedRefreshToken,
@@ -88,6 +88,10 @@ function oauthError(res: Response, status: number, error: string, description?: 
 const B64URL_43 = /^[A-Za-z0-9_-]{43}$/;
 const VERIFIER_FORMAT = /^[A-Za-z0-9\-._~]{43,128}$/;
 const PRINTABLE = /^[\x21-\x7e]+$/; // printable ASCII, no whitespace
+
+function assignmentClaims(access: AccessContext) {
+  return access.assignments.map((a) => ({ role: a.role, resource: a.resource, permissions: a.permissions }));
+}
 
 function singleString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -426,7 +430,9 @@ async function userinfo(req: Request, res: Response): Promise<void> {
   res.json({
     sub: claims.sub,
     ...claimsForScope(liveness.grant.user, scope),
-    ...(scope.includes("roles") ? { roles: liveness.access.roles, permissions: liveness.access.permissions } : {}),
+    ...(scope.includes("roles")
+      ? { roles: liveness.access.roles, permissions: liveness.access.permissions, assignments: assignmentClaims(liveness.access) }
+      : {}),
   });
 }
 oauthRouter.get("/userinfo", tokenLimit, userinfo);
@@ -497,6 +503,9 @@ oauthRouter.post("/introspect", tokenLimit, clientFailLimit, async (req, res) =>
     // Live values, not the snapshot inside the token.
     roles: liveness.access.roles,
     permissions: liveness.access.permissions,
+    // Every live assignment, including resource-limited ones, so an application can
+    // derive its own scoping from them: [{ role, resource, permissions }].
+    assignments: assignmentClaims(liveness.access),
     ...claimsForScope(liveness.grant.user, scope),
     account_status: liveness.grant.user.status,
   });
