@@ -8,6 +8,9 @@ import { appendAuditLog, auditedTransaction } from "../lib/audit.js";
 import { canonicalJson, toJsonValue } from "../lib/canonicalJson.js";
 import { computeSubjectDigest } from "../lib/approvalSignature.js";
 import { canViewApprovalRecord } from "../lib/approvalAccess.js";
+import { captureGoverningPolicy, effectiveLevel, presentGoverningPolicy } from "../lib/policySnapshot.js";
+
+class NoPolicyError extends Error {}
 
 export const actionsRouter = Router();
 
@@ -34,18 +37,19 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
   const payloadText = canonicalJson(payload);
 
   try {
-    // Resolve matching ApprovalPolicy
-    const policy = await prisma.approvalPolicy.findUnique({
-      where: { actionType: type },
-    });
-
-    if (!policy) {
-      res.status(400).json({ error: `No approval policy configured for action type "${type}"` });
-      return;
-    }
-
-    // Action, approval request and audit event commit atomically.
+    // Action, approval request, immutable policy snapshot and audit event
+    // commit atomically.
     const { action, approvalRequest } = await auditedTransaction(async (tx) => {
+      // Resolve the matching policy under a FOR SHARE lock, then copy it and its
+      // whole fallback chain into the request (captureGoverningPolicy). A
+      // concurrent policy edit holds FOR UPDATE on the same row, so the
+      // snapshot is the policy entirely before or entirely after that edit.
+      const [match] = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "ApprovalPolicy" WHERE "actionType" = ${type} FOR SHARE`;
+      if (!match) throw new NoPolicyError();
+      const { levels, truncated } = await captureGoverningPolicy(tx, match.id);
+      const first = levels[0];
+
       // Raw INSERT with an explicit ::jsonb cast of the canonical text: Prisma
       // 5's Json write path keeps only 16 significant digits of a number, so
       // e.g. a risk score of 0.38331432302637536 would be stored as
@@ -64,9 +68,13 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
       const newRequest = await tx.approvalRequest.create({
         data: {
           actionId: newAction.id,
-          policyId: policy.id,
-          expiresAt: new Date(Date.now() + policy.escalationTimeoutSec * 1000),
+          policyId: first.policyId,
+          escalationLevel: 0,
+          expiresAt: new Date(Date.now() + first.escalationTimeoutSec * 1000),
         },
+      });
+      await tx.approvalRequestPolicyLevel.createMany({
+        data: levels.map((l) => ({ ...l, requestId: newRequest.id, source: "CAPTURED" as const })),
       });
 
       await appendAuditLog(tx, {
@@ -76,10 +84,19 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
         actorId: req.user!.id,
         metadata: {
           type: newAction.type,
-          policyId: policy.id,
+          policyId: first.policyId,
           approvalRequestId: newRequest.id,
           expiresAt: newRequest.expiresAt,
           payloadDigest,
+          policyLevels: levels.map((l) => ({
+            level: l.level,
+            policyId: l.policyId,
+            policyRevisionId: l.policyRevisionId,
+            quorumType: l.quorumType,
+            minApprovals: l.minApprovals,
+            eligibleRoles: l.eligibleRoles,
+          })),
+          chainTruncated: truncated,
         },
       });
 
@@ -102,6 +119,10 @@ actionsRouter.post("/", requireAuth, requireTrust(), async (req: Request, res: R
       },
     });
   } catch (error) {
+    if (error instanceof NoPolicyError) {
+      res.status(400).json({ error: `No approval policy configured for action type "${type}"` });
+      return;
+    }
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -117,7 +138,7 @@ actionsRouter.get("/", requireAuth, async (req: Request, res: Response) => {
         },
         approvalRequest: {
           include: {
-            policy: true,
+            policyLevels: { orderBy: { level: "asc" } },
             votes: {
               include: {
                 approver: {
@@ -131,7 +152,15 @@ actionsRouter.get("/", requireAuth, async (req: Request, res: Response) => {
       },
       orderBy: { createdAt: "desc" },
     });
-    res.json(actions);
+    // `policy` is the frozen snapshot of the level in force, not the live policy.
+    res.json(
+      actions.map((a) => ({
+        ...a,
+        approvalRequest: a.approvalRequest
+          ? { ...a.approvalRequest, policy: presentGoverningPolicy(a.approvalRequest), policyLevels: undefined }
+          : null,
+      })),
+    );
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -168,7 +197,7 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
         },
         approvalRequest: {
           include: {
-            policy: true,
+            policyLevels: { orderBy: { level: "asc" } },
             votes: {
               include: {
                 approver: {
@@ -186,6 +215,7 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
         },
       },
     });
+    const governing = action?.approvalRequest ? effectiveLevel(action.approvalRequest) : null;
 
     if (
       !action ||
@@ -193,7 +223,7 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
         userId: viewer.id,
         role: viewer.role,
         action,
-        policy: action.approvalRequest?.policy ?? null,
+        policy: governing,
         voterIds: action.approvalRequest?.votes.map((v) => v.approverId) ?? [],
       })
     ) {
@@ -215,7 +245,7 @@ actionsRouter.get("/:id", requireAuth, async (req: Request, res: Response) => {
         id: action.approvalRequest.id,
         status: action.approvalRequest.status,
         expiresAt: action.approvalRequest.expiresAt,
-        policy: action.approvalRequest.policy,
+        policy: presentGoverningPolicy(action.approvalRequest),
         votes: action.approvalRequest.votes.map((v) => ({
           id: v.id,
           decision: v.decision,

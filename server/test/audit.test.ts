@@ -11,7 +11,7 @@ import {
   type AuditIssueKind,
 } from "../src/lib/audit.js";
 import { prisma } from "../src/lib/prisma.js";
-import { startTestServer, stopTestServer, apiRequest, createUserWithToken, cleanupUsers, runSuffix } from "./testServer.js";
+import { startTestServer, stopTestServer, apiRequest, createUserWithToken, addMockPasskey, governanceProof, cleanupUsers, runSuffix } from "./testServer.js";
 
 // P0-5 coverage for the linear, append-only audit chain.
 //
@@ -401,10 +401,14 @@ describe("P0-5: audit hash chain", () => {
     const superEmail = `audit-super-${runSuffix}@example.com`;
     const doomedEmail = `audit-doomed-${runSuffix}@example.com`;
     let superToken: string;
+    let superId: string;
 
     beforeAll(async () => {
       await startTestServer();
-      superToken = (await createUserWithToken({ email: superEmail, role: "SUPER_ADMIN" })).token;
+      const s = await createUserWithToken({ email: superEmail, role: "SUPER_ADMIN" });
+      superToken = s.token;
+      superId = s.user.id;
+      await addMockPasskey(superId);
     });
 
     afterAll(async () => {
@@ -415,7 +419,8 @@ describe("P0-5: audit hash chain", () => {
     it("deleting a user nulls actorId on their audit rows without breaking verification", async () => {
       const { user } = await createUserWithToken({ email: doomedEmail, role: "MEMBER" });
       const row = await appendCommitted("ACTED_BEFORE_DELETION", { actorId: user.id });
-      const res = await apiRequest(`/users/${user.id}`, { method: "DELETE", token: superToken });
+      const response = await governanceProof({ id: superId, token: superToken }, "user");
+      const res = await apiRequest(`/users/${user.id}`, { method: "DELETE", token: superToken, body: { response } });
       expect(res.status).toBe(204);
 
       const after = await prisma.auditLog.findUniqueOrThrow({ where: { id: row.id } });

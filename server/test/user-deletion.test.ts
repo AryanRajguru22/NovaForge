@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { startTestServer, stopTestServer, apiRequest, createUserWithToken, cleanupUsers, runSuffix } from "./testServer.js";
+import { startTestServer, stopTestServer, apiRequest, createUserWithToken, addMockPasskey, governanceProof, cleanupUsers, runSuffix } from "./testServer.js";
 import { prisma } from "../src/lib/prisma.js";
 
 // Regression coverage for a crash: deleting a user who still has a
@@ -19,6 +19,15 @@ describe("user deletion", () => {
   const actionType = `test:del-gate-${runSuffix}`;
 
   let adminToken: string;
+  let adminId: string;
+
+  // Deleting a user is a governance mutation: it needs a fresh passkey proof.
+  const deleteUser = async (userId: string) =>
+    apiRequest(`/users/${userId}`, {
+      method: "DELETE",
+      token: adminToken,
+      body: { response: await governanceProof({ id: adminId, token: adminToken }, "user") },
+    });
 
   beforeAll(async () => {
     await startTestServer();
@@ -26,6 +35,8 @@ describe("user deletion", () => {
 
     const admin = await createUserWithToken({ email: adminEmail, role: "SUPER_ADMIN" });
     adminToken = admin.token;
+    adminId = admin.user.id;
+    await addMockPasskey(adminId);
   });
 
   afterAll(async () => {
@@ -37,7 +48,7 @@ describe("user deletion", () => {
   it("deletes a user with no history cleanly", async () => {
     const { user } = await createUserWithToken({ email: cleanEmail, role: "MEMBER" });
 
-    const res = await apiRequest(`/users/${user.id}`, { method: "DELETE", token: adminToken });
+    const res = await deleteUser(user.id);
     expect(res.status).toBe(204);
 
     const stillThere = await prisma.user.findUnique({ where: { id: user.id } });
@@ -50,7 +61,7 @@ describe("user deletion", () => {
       data: { type: actionType, payload: { note: "test" }, requestedById: user.id },
     });
 
-    const res = await apiRequest(`/users/${user.id}`, { method: "DELETE", token: adminToken });
+    const res = await deleteUser(user.id);
     expect(res.status).toBe(409);
     expect(res.data.error).toMatch(/sensitive actions or votes/i);
 

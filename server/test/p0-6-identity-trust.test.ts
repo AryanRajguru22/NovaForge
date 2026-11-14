@@ -9,6 +9,7 @@ import {
   createUserWithToken,
   addMockPasskey,
   authenticatorFor,
+  governanceProof,
   cleanupUsers,
   runSuffix,
 } from "./testServer.js";
@@ -50,6 +51,7 @@ describe("P0-6: account status and service trust", () => {
     configureIdentityKeyRing({ current: keyA, previous: [] });
     const s = await createUserWithToken({ email: emails.superAdmin, role: "SUPER_ADMIN" });
     superAdmin = { id: s.user.id, token: s.token };
+    await addMockPasskey(superAdmin.id);
     await createUserWithToken({ email: emails.otherSuper, role: "SUPER_ADMIN" });
     const a = await createUserWithToken({ email: emails.admin, role: "ADMIN" });
     admin = { id: a.user.id, token: a.token };
@@ -126,7 +128,7 @@ describe("P0-6: account status and service trust", () => {
       const disable = await apiRequest(`/users/${u.user.id}/status`, {
         method: "PATCH",
         token: superAdmin.token,
-        body: { status: "DISABLED", reason: "left the organization" },
+        body: { status: "DISABLED", reason: "left the organization", response: await governanceProof(superAdmin, "user") },
       });
       expect(disable.status).toBe(200);
       expect(await prisma.session.count({ where: { userId: u.user.id } })).toBe(0);
@@ -175,7 +177,11 @@ describe("P0-6: account status and service trust", () => {
     it("reactivation restores sign-in", async () => {
       const u = await makeUser(emails.worker);
       await prisma.user.update({ where: { id: u.user.id }, data: { status: "DISABLED" } });
-      const enable = await apiRequest(`/users/${u.user.id}/status`, { method: "PATCH", token: superAdmin.token, body: { status: "ACTIVE" } });
+      const enable = await apiRequest(`/users/${u.user.id}/status`, {
+        method: "PATCH",
+        token: superAdmin.token,
+        body: { status: "ACTIVE", response: await governanceProof(superAdmin, "user") },
+      });
       expect(enable.status).toBe(200);
       const options = await apiRequest("/auth/login/options", { method: "POST", body: { email: emails.worker } });
       const login = await apiRequest("/auth/login/verify", {
@@ -191,7 +197,15 @@ describe("P0-6: account status and service trust", () => {
       // that state isn't reachable through this endpoint.)
       const u = await makeUser(emails.worker);
       expect((await apiRequest(`/users/${u.user.id}/status`, { method: "PATCH", token: admin.token, body: { status: "DISABLED" } })).status).toBe(403);
-      expect((await apiRequest(`/users/${superAdmin.id}/status`, { method: "PATCH", token: superAdmin.token, body: { status: "DISABLED" } })).status).toBe(400);
+      expect(
+        (
+          await apiRequest(`/users/${superAdmin.id}/status`, {
+            method: "PATCH",
+            token: superAdmin.token,
+            body: { status: "DISABLED", response: await governanceProof(superAdmin, "user") },
+          })
+        ).status,
+      ).toBe(400);
       expect((await prisma.user.findUniqueOrThrow({ where: { id: superAdmin.id } })).status).toBe("ACTIVE");
     });
   });

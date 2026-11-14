@@ -1,7 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { startTestServer, stopTestServer, apiRequest, createUserWithToken, cleanupUsers, cleanupPolicies, runSuffix } from "./testServer.js";
+import {
+  startTestServer,
+  stopTestServer,
+  apiRequest,
+  createUserWithToken,
+  addMockPasskey,
+  governanceProof,
+  cleanupUsers,
+  cleanupPolicies,
+  runSuffix,
+} from "./testServer.js";
 import { prisma } from "../src/lib/prisma.js";
 
+// Every policy mutation requires a fresh passkey proof (Phase 1), so each call
+// below fetches one for its actor exactly as the real client does.
 describe("policy management", () => {
   const emails = [
     `policy-admin-${runSuffix}@example.com`,
@@ -11,18 +23,24 @@ describe("policy management", () => {
   const actionType = "test:policy-crud";
   const referencedActionType = "test:policy-delete-referenced";
   const superAdminActionType = "test:policy-superadmin-crud";
-  let adminToken: string;
+  let admin: { id: string; token: string };
   let memberToken: string;
-  let superAdminToken: string;
+  let superAdmin: { id: string; token: string };
   let createdPolicyId: string;
+
+  const proof = (actor: { id: string; token: string }) => governanceProof(actor, "policy");
 
   beforeAll(async () => {
     await startTestServer();
     await cleanupUsers(emails);
     await cleanupPolicies([actionType, referencedActionType, superAdminActionType]);
-    adminToken = (await createUserWithToken({ email: emails[0], role: "ADMIN" })).token;
+    const a = await createUserWithToken({ email: emails[0], role: "ADMIN" });
+    admin = { id: a.user.id, token: a.token };
+    await addMockPasskey(admin.id);
     memberToken = (await createUserWithToken({ email: emails[1], role: "MEMBER" })).token;
-    superAdminToken = (await createUserWithToken({ email: emails[2], role: "SUPER_ADMIN" })).token;
+    const s = await createUserWithToken({ email: emails[2], role: "SUPER_ADMIN" });
+    superAdmin = { id: s.user.id, token: s.token };
+    await addMockPasskey(superAdmin.id);
   });
 
   afterAll(async () => {
@@ -43,8 +61,8 @@ describe("policy management", () => {
   it("lets an admin create a policy", async () => {
     const { status, data } = await apiRequest("/policies", {
       method: "POST",
-      token: adminToken,
-      body: { actionType, quorumType: "N_OF_M", minApprovals: 2, eligibleRoles: ["ADMIN"] },
+      token: admin.token,
+      body: { actionType, quorumType: "N_OF_M", minApprovals: 2, eligibleRoles: ["ADMIN"], response: await proof(admin) },
     });
     expect(status).toBe(201);
     expect(data.actionType).toBe(actionType);
@@ -54,8 +72,14 @@ describe("policy management", () => {
   it("lets a super admin do everything an admin can, including creating a policy", async () => {
     const { status, data } = await apiRequest("/policies", {
       method: "POST",
-      token: superAdminToken,
-      body: { actionType: superAdminActionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"] },
+      token: superAdmin.token,
+      body: {
+        actionType: superAdminActionType,
+        quorumType: "N_OF_M",
+        minApprovals: 1,
+        eligibleRoles: ["ADMIN"],
+        response: await proof(superAdmin),
+      },
     });
     expect(status).toBe(201);
     expect(data.actionType).toBe(superAdminActionType);
@@ -64,8 +88,8 @@ describe("policy management", () => {
   it("rejects a duplicate actionType", async () => {
     const { status, data } = await apiRequest("/policies", {
       method: "POST",
-      token: adminToken,
-      body: { actionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"] },
+      token: admin.token,
+      body: { actionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"], response: await proof(admin) },
     });
     expect(status).toBe(400);
     expect(data.error).toMatch(/already exists/);
@@ -74,8 +98,8 @@ describe("policy management", () => {
   it("updates a policy", async () => {
     const { status, data } = await apiRequest(`/policies/${createdPolicyId}`, {
       method: "PUT",
-      token: adminToken,
-      body: { minApprovals: 3 },
+      token: admin.token,
+      body: { minApprovals: 3, response: await proof(admin) },
     });
     expect(status).toBe(200);
     expect(data.minApprovals).toBe(3);
@@ -84,8 +108,8 @@ describe("policy management", () => {
   it("rejects a policy referencing itself as its own fallback", async () => {
     const { status, data } = await apiRequest(`/policies/${createdPolicyId}`, {
       method: "PUT",
-      token: adminToken,
-      body: { fallbackPolicyId: createdPolicyId },
+      token: admin.token,
+      body: { fallbackPolicyId: createdPolicyId, response: await proof(admin) },
     });
     expect(status).toBe(400);
     expect(data.error).toMatch(/cannot use itself/);
@@ -94,21 +118,21 @@ describe("policy management", () => {
   it("refuses to delete a policy that an approval request still references", async () => {
     const policy = await apiRequest("/policies", {
       method: "POST",
-      token: adminToken,
-      body: { actionType: referencedActionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"] },
+      token: admin.token,
+      body: { actionType: referencedActionType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["ADMIN"], response: await proof(admin) },
     });
     const policyId = policy.data.id;
 
     const created = await apiRequest("/actions", {
       method: "POST",
-      token: adminToken,
+      token: admin.token,
       body: { type: referencedActionType, payload: { amount: 1 } },
     });
 
     // This is a real bug found via manual testing: deleting a policy with an
     // existing ApprovalRequest used to throw a raw Postgres FK violation
     // (500). The route now checks first and returns a clean 400.
-    const del = await apiRequest(`/policies/${policyId}`, { method: "DELETE", token: adminToken });
+    const del = await apiRequest(`/policies/${policyId}`, { method: "DELETE", token: admin.token, body: { response: await proof(admin) } });
     expect(del.status).toBe(400);
     expect(del.data.error).toMatch(/still reference it/);
 
@@ -120,7 +144,8 @@ describe("policy management", () => {
   it("deletes a policy", async () => {
     const { status, data } = await apiRequest(`/policies/${createdPolicyId}`, {
       method: "DELETE",
-      token: adminToken,
+      token: admin.token,
+      body: { response: await proof(admin) },
     });
     expect(status).toBe(200);
     expect(data.deleted).toBe(true);

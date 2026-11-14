@@ -9,6 +9,7 @@ import {
   addMockPasskey,
   authenticatorFor,
   castVote,
+  createApprovalRequestWithSnapshot,
   cleanupUsers,
   cleanupPolicies,
   runSuffix,
@@ -262,9 +263,8 @@ describe("P0-4: approval decisions are cryptographically bound to the signature"
     it("an action created before subject digests existed cannot be voted on", async () => {
       const policy = await prisma.approvalPolicy.findUniqueOrThrow({ where: { actionType } });
       const legacy = await prisma.sensitiveAction.create({ data: { type: actionType, payload: { legacy: true }, requestedById: requester.id } });
-      const request = await prisma.approvalRequest.create({
-        data: { actionId: legacy.id, policyId: policy.id, expiresAt: new Date(Date.now() + 60_000) },
-      });
+      // A real snapshot, so the refusal below can only come from the missing digest.
+      const request = await createApprovalRequestWithSnapshot({ actionId: legacy.id, policyId: policy.id, expiresAt: new Date(Date.now() + 60_000) });
       const res = await apiRequest(`/approvals/${request.id}/options`, { method: "POST", token: approver.token, body: { decision: "APPROVE" } });
       expect(res.status).toBe(409);
     });

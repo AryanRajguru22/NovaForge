@@ -19,7 +19,20 @@ import { decayedTrustLevel } from "../lib/trust.js";
 // bonus, since merely being gated isn't a re-verification.
 const MIN_TRUST_FOR_SENSITIVE_ACTIONS = 50;
 
-export function requireTrust(minTrust: number = MIN_TRUST_FOR_SENSITIVE_ACTIONS) {
+export interface TrustDenial {
+  trustLevel: number;
+  required: number;
+}
+
+/**
+ * `onDeny` lets a caller record the refusal (e.g. as an audit event) before
+ * the 403 is sent. It must not throw to change the outcome: the request is
+ * refused regardless.
+ */
+export function requireTrust(
+  minTrust: number = MIN_TRUST_FOR_SENSITIVE_ACTIONS,
+  options: { onDeny?: (req: Request, denial: TrustDenial) => Promise<void> } = {},
+) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const session = await prisma.session.findUnique({ where: { id: req.user!.sessionId } });
     if (!session) {
@@ -31,6 +44,13 @@ export function requireTrust(minTrust: number = MIN_TRUST_FOR_SENSITIVE_ACTIONS)
     // assert, so the same session reports the same effective trust everywhere.
     const trustLevel = Math.round(decayedTrustLevel(session));
     if (trustLevel < minTrust) {
+      if (options.onDeny) {
+        try {
+          await options.onDeny(req, { trustLevel, required: minTrust });
+        } catch (err) {
+          console.error("[requireTrust] onDeny hook failed", err);
+        }
+      }
       res.status(403).json({
         error: "Session trust is too low for this action. Reconnect to re-verify, then try again.",
         trustLevel,

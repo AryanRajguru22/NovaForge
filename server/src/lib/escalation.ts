@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { appendAuditLog, auditedTransaction } from "./audit.js";
+import { effectiveLevel, nextLevel } from "./policySnapshot.js";
 
 let ioInstance: any = null;
 let intervalHandle: NodeJS.Timeout | null = null;
@@ -39,79 +40,86 @@ export async function checkEscalations() {
         expiresAt: { lte: new Date() },
       },
       include: {
-        policy: true,
+        policyLevels: { orderBy: { level: "asc" } },
       },
     });
 
     for (const request of expiredRequests) {
-      const { id, policy, actionId } = request;
+      const { id, actionId } = request;
 
-      if (policy.fallbackPolicyId) {
-        // Resolve fallback policy
-        const fallbackPolicy = await prisma.approvalPolicy.findUnique({
-          where: { id: policy.fallbackPolicyId },
-        });
+      // Escalation follows the policy chain frozen at creation
+      // (server/src/lib/policySnapshot.ts), never the live policies: the next
+      // level is the fallback as it was when the request was made, with its
+      // own timeout. The level only ever increases and the chain is finite
+      // (at most MAX_ESCALATIONS + 1 levels), so escalation always
+      // terminates; a request on its last level -- or one whose snapshot is
+      // missing -- expires (fail closed).
+      const current = effectiveLevel(request);
+      const next = current ? nextLevel(request) : null;
 
-        if (fallbackPolicy) {
-          const newExpiresAt = new Date(Date.now() + fallbackPolicy.escalationTimeoutSec * 1000);
+      if (current && next) {
+        const newExpiresAt = new Date(Date.now() + next.escalationTimeoutSec * 1000);
 
-          // The reassignment and its audit events commit together or not at all.
-          const success = await auditedTransaction(async (tx) => {
-            const updated = await tx.approvalRequest.updateMany({
-              where: {
-                id,
-                status: "PENDING",
-              },
-              data: {
-                policyId: fallbackPolicy.id,
-                expiresAt: newExpiresAt,
-              },
-            });
-            if (updated.count !== 1) return false;
+        // The reassignment and its audit events commit together or not at all.
+        // The level and expiry are part of the compare-and-swap, so a request
+        // that another pass or a vote already moved is skipped.
+        const success = await auditedTransaction(async (tx) => {
+          const updated = await tx.approvalRequest.updateMany({
+            where: {
+              id,
+              status: "PENDING",
+              escalationLevel: current.level,
+              expiresAt: { lte: new Date() },
+            },
+            data: {
+              escalationLevel: next.level,
+              policyId: next.policyId,
+              expiresAt: newExpiresAt,
+            },
+          });
+          if (updated.count !== 1) return false;
 
-            await appendAuditLog(tx, {
-              entityType: "ApprovalRequest",
-              entityId: id,
-              event: "ESCALATION_TRIGGERED",
-              metadata: {
-                previousPolicyId: policy.id,
-                fallbackPolicyId: fallbackPolicy.id,
-              },
-            });
-
-            await appendAuditLog(tx, {
-              entityType: "ApprovalRequest",
-              entityId: id,
-              event: "FALLBACK_POLICY_ASSIGNED",
-              metadata: {
-                fallbackPolicyId: fallbackPolicy.id,
-                expiresAt: newExpiresAt,
-              },
-            });
-            return true;
+          await appendAuditLog(tx, {
+            entityType: "ApprovalRequest",
+            entityId: id,
+            event: "ESCALATION_TRIGGERED",
+            metadata: {
+              previousPolicyId: current.policyId,
+              fallbackPolicyId: next.policyId,
+              fromLevel: current.level,
+              toLevel: next.level,
+              levelCount: request.policyLevels.length,
+            },
           });
 
-          if (!success) {
-            console.log(`Request ${id} is no longer PENDING. Skipping escalation.`);
-            continue;
-          }
-
-          // Socket event
-          if (ioInstance) {
-            ioInstance.to(id).emit("escalated", {
-              requestId: id,
-              newPolicyId: fallbackPolicy.id,
+          await appendAuditLog(tx, {
+            entityType: "ApprovalRequest",
+            entityId: id,
+            event: "FALLBACK_POLICY_ASSIGNED",
+            metadata: {
+              fallbackPolicyId: next.policyId,
               expiresAt: newExpiresAt,
-            });
-          }
-          console.log(`Escalated request ${id} to policy ${fallbackPolicy.id}`);
-        } else {
-          // Fallback policy defined but does not exist in DB (invalid configuration)
-          console.error(`Fallback policy ${policy.fallbackPolicyId} for request ${id} not found in DB. Expiring request.`);
-          await expireRequest(id, actionId);
+            },
+          });
+          return true;
+        });
+
+        if (!success) {
+          console.log(`Request ${id} is no longer PENDING at level ${current.level}. Skipping escalation.`);
+          continue;
         }
+
+        // Socket event
+        if (ioInstance) {
+          ioInstance.to(id).emit("escalated", {
+            requestId: id,
+            newPolicyId: next.policyId,
+            expiresAt: newExpiresAt,
+          });
+        }
+        console.log(`Escalated request ${id} to level ${next.level} (policy ${next.policyId})`);
       } else {
-        // No fallback policy, transition to EXPIRED
+        // Last level (or no snapshot): transition to EXPIRED
         await expireRequest(id, actionId);
       }
     }

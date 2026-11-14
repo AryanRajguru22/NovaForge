@@ -4,6 +4,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { signAccessToken } from "../src/lib/jwt.js";
 import { stopEscalationService } from "../src/lib/escalation.js";
 import { resetRateLimitBuckets } from "../src/middleware/rateLimit.js";
+import { captureGoverningPolicy } from "../src/lib/policySnapshot.js";
 import { SoftAuthenticator } from "./softAuthenticator.js";
 
 let baseUrl = "";
@@ -172,4 +173,33 @@ export async function cleanupUsers(emails: string[]) {
 
 export async function cleanupPolicies(actionTypes: string[]) {
   await prisma.approvalPolicy.deleteMany({ where: { actionType: { in: actionTypes } } });
+}
+
+/**
+ * A fresh passkey assertion for a governance mutation (policy or user
+ * governance), obtained exactly as the real client does it: ask the server for
+ * a single-use challenge, sign it with the actor's software authenticator.
+ * The actor needs a passkey (addMockPasskey).
+ */
+export async function governanceProof(actor: { id: string; token: string }, kind: "policy" | "user") {
+  const path = kind === "policy" ? "/policies/step-up/options" : "/users/governance/step-up/options";
+  const options = await apiRequest(path, { method: "POST", token: actor.token, body: {} });
+  if (options.status !== 200) throw new Error(`step-up options failed: ${options.status} ${JSON.stringify(options.data)}`);
+  return authenticatorFor(actor.id).createAssertion(options.data.challenge);
+}
+
+/**
+ * Creates an ApprovalRequest the way POST /actions does -- with the immutable
+ * policy snapshot captured from `policyId` and its fallback chain -- for tests
+ * that need to control timing or the action directly.
+ */
+export async function createApprovalRequestWithSnapshot(data: { actionId: string; policyId: string; expiresAt: Date }) {
+  return prisma.$transaction(async (tx) => {
+    const { levels } = await captureGoverningPolicy(tx, data.policyId);
+    const request = await tx.approvalRequest.create({
+      data: { actionId: data.actionId, policyId: levels[0].policyId, escalationLevel: 0, expiresAt: data.expiresAt },
+    });
+    await tx.approvalRequestPolicyLevel.createMany({ data: levels.map((l) => ({ ...l, requestId: request.id })) });
+    return request;
+  });
 }

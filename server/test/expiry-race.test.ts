@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { startTestServer, stopTestServer, apiRequest, createUserWithToken, addMockPasskey, cleanupUsers, cleanupPolicies, runSuffix, castVote as castSignedVote } from "./testServer.js";
+import { startTestServer, stopTestServer, apiRequest, createUserWithToken, addMockPasskey, cleanupUsers, cleanupPolicies, runSuffix, castVote as castSignedVote, createApprovalRequestWithSnapshot } from "./testServer.js";
 import { computeSubjectDigest } from "../src/lib/approvalSignature.js";
 import { prisma } from "../src/lib/prisma.js";
 import { checkEscalations } from "../src/lib/escalation.js";
@@ -67,9 +67,7 @@ describe("P0-2: vote vs. expiry/escalation race", () => {
       data: { type: actionType, payload: { amount: 7 }, payloadDigest: computeSubjectDigest(actionType, { amount: 7 }), requestedById: creator.id },
     });
     const policy = await prisma.approvalPolicy.findUniqueOrThrow({ where: { actionType } });
-    const request = await prisma.approvalRequest.create({
-      data: { actionId: action.id, policyId: policy.id, expiresAt: new Date(Date.now() - 1000) },
-    });
+    const request = await createApprovalRequestWithSnapshot({ actionId: action.id, policyId: policy.id, expiresAt: new Date(Date.now() - 1000) });
 
     const castVote = () => castSignedVote(request.id, approver, "APPROVE");
 
@@ -180,7 +178,8 @@ describe("P0-2: vote vs. escalation's fallback-policy reassignment race", () => 
     await prisma.$transaction(async (tx) => {
       const updated = await tx.approvalRequest.updateMany({
         where: { id: requestId, status: "PENDING" },
-        data: { policyId: newPolicyId, expiresAt: newExpiresAt },
+        // Escalation moves to the next pre-captured level (1 = the fallback).
+        data: { policyId: newPolicyId, escalationLevel: 1, expiresAt: newExpiresAt },
       });
       success = updated.count === 1;
     });
@@ -191,9 +190,7 @@ describe("P0-2: vote vs. escalation's fallback-policy reassignment race", () => 
     const action = await prisma.sensitiveAction.create({
       data: { type: primaryType, payload: { amount: 1 }, payloadDigest: computeSubjectDigest(primaryType, { amount: 1 }), requestedById: creator.id },
     });
-    const request = await prisma.approvalRequest.create({
-      data: { actionId: action.id, policyId: primaryPolicy.id, expiresAt: new Date(Date.now() + 60_000) },
-    });
+    const request = await createApprovalRequestWithSnapshot({ actionId: action.id, policyId: primaryPolicy.id, expiresAt: new Date(Date.now() + 60_000) });
 
     const castVote = () => castSignedVote(request.id, approver, "APPROVE");
 
@@ -225,7 +222,7 @@ describe("P0-2: vote vs. escalation's fallback-policy reassignment race", () => 
     // (e.g. APPROVED while policyId already reads as fallback's id, which
     // requires 5 votes) -- this assertion rejects exactly that combination.
     const wonUnderPrimary = dbRequest?.status === "APPROVED" && dbRequest?.policyId === primaryPolicy.id;
-    const wonUnderFallback = dbRequest?.status === "PENDING" && dbRequest?.policyId === fallbackPolicy.id;
+    const wonUnderFallback = dbRequest?.status === "PENDING" && dbRequest?.policyId === fallbackPolicy.id && dbRequest?.escalationLevel === 1;
     expect(wonUnderPrimary || wonUnderFallback).toBe(true);
 
     const votes = await prisma.approvalVote.findMany({ where: { requestId: request.id } });

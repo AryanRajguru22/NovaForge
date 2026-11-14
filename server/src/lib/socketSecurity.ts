@@ -5,6 +5,7 @@ import { prisma } from "./prisma.js";
 import { verifyAccessToken } from "./jwt.js";
 import { isSessionLive } from "../middleware/requireAuth.js";
 import { canViewApprovalRecord } from "./approvalAccess.js";
+import { effectiveLevel } from "./policySnapshot.js";
 
 // Socket.io's own room-membership mechanism is not, and must never be
 // treated as, an authorization boundary: a room is just a string key, and
@@ -163,7 +164,7 @@ export function initSocketSecurity(io: Server, options: { sweepIntervalMs?: numb
 
         const approvalRequest = await prisma.approvalRequest.findUnique({
           where: { id: requestId },
-          include: { action: true, policy: true, votes: { select: { approverId: true } } },
+          include: { action: true, policyLevels: true, votes: { select: { approverId: true } } },
         });
         if (!approvalRequest) {
           // A nonexistent id is denied identically to an existing-but-
@@ -189,7 +190,9 @@ export function initSocketSecurity(io: Server, options: { sweepIntervalMs?: numb
           userId: user.id,
           role: user.role,
           action: approvalRequest.action,
-          policy: approvalRequest.policy,
+          // The frozen level in force, not the live policy (null => only
+          // requester / voters / SUPER_ADMIN).
+          policy: effectiveLevel(approvalRequest),
           voterIds: approvalRequest.votes.map((v) => v.approverId),
         });
         if (!allowed) {

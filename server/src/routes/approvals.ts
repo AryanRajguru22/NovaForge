@@ -20,8 +20,9 @@ import {
   statementChallenge,
   statementChallengeBytes,
 } from "../lib/approvalSignature.js";
-import { Prisma, QuorumType } from "@prisma/client";
+import { Prisma, QuorumType, type Role } from "@prisma/client";
 import { io } from "../app.js";
+import { effectiveLevel, isPolicyEditorConflict, presentGoverningPolicy } from "../lib/policySnapshot.js";
 
 export const approvalsRouter = Router();
 
@@ -55,8 +56,8 @@ approvalsRouter.get("/pending", requireAuth, async (req: Request, res: Response)
       where: {
         status: "PENDING",
         expiresAt: { gt: new Date() },
-        policy: {
-          eligibleRoles: { has: user.role },
+        policyLevels: {
+          some: { eligibleRoles: { has: user.role } },
         },
         action: {
           requestedById: { not: user.id },
@@ -75,7 +76,7 @@ approvalsRouter.get("/pending", requireAuth, async (req: Request, res: Response)
             },
           },
         },
-        policy: true,
+        policyLevels: { orderBy: { level: "asc" } },
         votes: {
           include: {
             approver: {
@@ -86,7 +87,18 @@ approvalsRouter.get("/pending", requireAuth, async (req: Request, res: Response)
       },
     });
 
-    res.json(pendingRequests);
+    // Eligibility is judged against the frozen level currently in force, not
+    // the live policy; the SQL filter above only narrows by "any level".
+    // A user who authored a governing policy revision may not decide the
+    // request, so it is not offered to them.
+    const visible = pendingRequests
+      .filter((r) => {
+        const level = effectiveLevel(r);
+        return level !== null && level.eligibleRoles.includes(user.role) && !isPolicyEditorConflict(user.id, r.policyLevels);
+      })
+      .map((r) => ({ ...r, policy: presentGoverningPolicy(r), policyLevels: undefined }));
+
+    res.json(visible);
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -112,6 +124,10 @@ approvalsRouter.get("/pending", requireAuth, async (req: Request, res: Response)
 // signature for request A can't be used on request B, and a signature over
 // one payload digest can't approve a modified payload -- each yields a
 // different challenge, so the assertion simply doesn't verify.
+
+// Separation of duties: whoever authored a governing policy revision cannot
+// decide requests created under it (server/src/lib/policySnapshot.ts).
+const POLICY_EDITOR_CONFLICT_ERROR = "Forbidden: You changed a policy that governs this request";
 
 const decisionSchema = z.enum(DECISIONS);
 const reasonSchema = z
@@ -161,7 +177,7 @@ approvalsRouter.post("/:id/options", requireAuth, async (req: Request, res: Resp
       where: { id },
       include: {
         action: true,
-        policy: true,
+        policyLevels: true,
       },
     });
 
@@ -172,6 +188,14 @@ approvalsRouter.post("/:id/options", requireAuth, async (req: Request, res: Resp
 
     if (approvalRequest.status !== "PENDING" || approvalRequest.expiresAt < new Date()) {
       res.status(400).json({ error: "Approval request is no longer pending" });
+      return;
+    }
+
+    // The frozen rules in force for this request. No snapshot => nothing
+    // verifiable to decide under => fail closed (never read the live policy).
+    const optionsLevel = effectiveLevel(approvalRequest);
+    if (!optionsLevel) {
+      res.status(409).json({ error: "This request has no governing policy snapshot and cannot be voted on" });
       return;
     }
 
@@ -186,9 +210,13 @@ approvalsRouter.post("/:id/options", requireAuth, async (req: Request, res: Resp
     }
 
     // Check eligibility
-    const optionsAccess = getApprovalAccessContext(user.id, user.role, approvalRequest.action, approvalRequest.policy);
+    const optionsAccess = getApprovalAccessContext(user.id, user.role, approvalRequest.action, optionsLevel);
     if (!optionsAccess.isEligibleRole) {
       res.status(403).json({ error: "Forbidden: You are not eligible to approve this action" });
+      return;
+    }
+    if (isPolicyEditorConflict(user.id, approvalRequest.policyLevels)) {
+      res.status(403).json({ error: POLICY_EDITOR_CONFLICT_ERROR });
       return;
     }
 
@@ -260,7 +288,7 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       where: { id },
       include: {
         action: true,
-        policy: true,
+        policyLevels: true,
       },
     });
 
@@ -271,6 +299,12 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
 
     if (approvalRequest.status !== "PENDING" || approvalRequest.expiresAt < new Date()) {
       res.status(400).json({ error: "Approval request is no longer pending" });
+      return;
+    }
+
+    const voteLevel = effectiveLevel(approvalRequest);
+    if (!voteLevel) {
+      res.status(409).json({ error: "This request has no governing policy snapshot and cannot be voted on" });
       return;
     }
 
@@ -285,9 +319,13 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
     }
 
     // Eligibility check
-    const voteAccess = getApprovalAccessContext(user.id, user.role, approvalRequest.action, approvalRequest.policy);
+    const voteAccess = getApprovalAccessContext(user.id, user.role, approvalRequest.action, voteLevel);
     if (!voteAccess.isEligibleRole) {
       res.status(403).json({ error: "Forbidden: You are not eligible to approve this action" });
+      return;
+    }
+    if (isPolicyEditorConflict(user.id, approvalRequest.policyLevels)) {
+      res.status(403).json({ error: POLICY_EDITOR_CONFLICT_ERROR });
       return;
     }
 
@@ -361,8 +399,8 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
     const txResult = await auditedTransaction(async (tx) => {
       // 1. Lock the ApprovalRequest row FIRST.
       const [lockedRequest] = await tx.$queryRaw<
-        { id: string; status: string; expiresAt: Date; policyId: string; actionId: string }[]
-      >`SELECT "id", "status", "expiresAt", "policyId", "actionId" FROM "ApprovalRequest" WHERE "id" = ${id} FOR UPDATE`;
+        { id: string; status: string; expiresAt: Date; policyId: string; actionId: string; escalationLevel: number }[]
+      >`SELECT "id", "status", "expiresAt", "policyId", "actionId", "escalationLevel" FROM "ApprovalRequest" WHERE "id" = ${id} FOR UPDATE`;
 
       // 2. Re-validate against the locked row, not the pre-transaction read.
       if (!lockedRequest || lockedRequest.status !== "PENDING" || lockedRequest.expiresAt < new Date()) {
@@ -383,24 +421,42 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
         return "SUBJECT_MISMATCH" as const;
       }
 
-      // 4. Re-read the policy this request is *currently* assigned to.
-      const policy = await tx.approvalPolicy.findUnique({ where: { id: lockedRequest.policyId } });
+      // 4. Re-read the frozen policy levels and take the one in force at the
+      // escalation level read UNDER THE LOCK. These rows are immutable, so
+      // nothing that happens to the live ApprovalPolicy can change this
+      // request's rules; only escalation (which needs this same row lock)
+      // moves the level.
+      const levels = await tx.approvalRequestPolicyLevel.findMany({
+        where: { requestId: id },
+        orderBy: { level: "asc" },
+      });
+      const policy = effectiveLevel({ escalationLevel: lockedRequest.escalationLevel, policyLevels: levels });
       if (!policy) {
-        throw new Error(
-          `ApprovalPolicy ${lockedRequest.policyId} referenced by locked ApprovalRequest ${id} not found`,
-        );
+        throw new Error(`ApprovalRequest ${id} has no policy snapshot level ${lockedRequest.escalationLevel}`);
       }
 
-      // 4b. Re-check eligibility against the locked action and policy. The
-      // pre-transaction check used a snapshot; escalation may have reassigned
-      // the request to a fallback policy with different eligible roles since.
-      // Must stay before the first write below: a returned sentinel commits.
-      const lockedAccess = getApprovalAccessContext(user.id, user.role, action, policy);
+      // 4a. The voter's role, weight and status as of right now, read under
+      // FOR SHARE so a concurrent role/weight change either completes before
+      // this read or waits for this transaction. These -- not the earlier,
+      // pre-transaction read -- are what is judged and what is recorded.
+      const [voter] = await tx.$queryRaw<{ role: Role; voteWeight: number; status: string }[]>`
+        SELECT "role", "voteWeight", "status" FROM "User" WHERE "id" = ${user.id} FOR SHARE`;
+      if (!voter || voter.status !== "ACTIVE") {
+        return "NOT_ELIGIBLE" as const;
+      }
+
+      // 4b. Re-check eligibility against the locked action, the snapshot level
+      // and the voter's current role. Must stay before the first write below:
+      // a returned sentinel commits.
+      const lockedAccess = getApprovalAccessContext(user.id, voter.role, action, policy);
       if (!lockedAccess.isEligibleRole) {
         return "NOT_ELIGIBLE" as const;
       }
       if (lockedAccess.isRequester) {
         return "IS_REQUESTER" as const;
+      }
+      if (isPolicyEditorConflict(user.id, levels)) {
+        return "POLICY_EDITOR" as const;
       }
 
       // 5. Update credential counter
@@ -421,6 +477,8 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
           reason,
           signature: response.response.signature,
           deviceId: credential.id,
+          roleAtVote: voter.role,
+          weightAtVote: voter.voteWeight,
           signedStatement: serialized,
           statementHash,
           clientDataJSON: response.response.clientDataJSON,
@@ -432,7 +490,6 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       // 7. Recalculate status from every vote (row lock held => complete view).
       const votes = await tx.approvalVote.findMany({
         where: { requestId: id },
-        include: { approver: true },
       });
 
       const approvedVotes = votes.filter((v) => v.decision === "APPROVE");
@@ -453,7 +510,9 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
             updatedStatus = "APPROVED";
           }
         } else if (policy.quorumType === QuorumType.ROLE_BASED) {
-          const approverRoles = new Set(approvedVotes.map((v) => v.approver.role));
+          // Roles and weights are those frozen on each vote (roleAtVote /
+          // weightAtVote), never the voter's current User row.
+          const approverRoles = new Set(approvedVotes.map((v) => v.roleAtVote));
           const allRolesSatisfied = policy.eligibleRoles.every((role) => approverRoles.has(role));
           if (allRolesSatisfied) {
             updatedStatus = "APPROVED";
@@ -461,7 +520,7 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
         } else if (policy.quorumType === QuorumType.WEIGHTED) {
           // For WEIGHTED policies, minApprovals is the weight threshold rather
           // than a headcount -- each approver's User.voteWeight is summed.
-          const totalWeight = approvedVotes.reduce((sum, v) => sum + v.approver.voteWeight, 0);
+          const totalWeight = approvedVotes.reduce((sum, v) => sum + v.weightAtVote, 0);
           if (totalWeight >= policy.minApprovals) {
             updatedStatus = "APPROVED";
           }
@@ -480,6 +539,9 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
           deviceId: credential.id,
           statementHash,
           subjectDigest: statement.subjectDigest,
+          roleAtVote: voter.role,
+          weightAtVote: voter.voteWeight,
+          escalationLevel: lockedRequest.escalationLevel,
         },
       });
 
@@ -552,6 +614,10 @@ approvalsRouter.post("/:id/vote", requireAuth, requireTrust(), async (req: Reque
       res.status(403).json({ error: "Forbidden: Requester cannot approve their own action" });
       return;
     }
+    if (txResult === "POLICY_EDITOR") {
+      res.status(403).json({ error: POLICY_EDITOR_CONFLICT_ERROR });
+      return;
+    }
     if (txResult === "SUBJECT_MISMATCH") {
       res.status(409).json({ error: "The request's subject changed after the decision was signed; the vote was not recorded" });
       return;
@@ -605,8 +671,8 @@ approvalsRouter.get("/history", requireAuth, async (req: Request, res: Response)
           // Completed requests where user was an eligible approver
           {
             status: { in: ["APPROVED", "REJECTED", "POSTPONED", "EXPIRED"] },
-            policy: {
-              eligibleRoles: { has: user.role },
+            policyLevels: {
+              some: { eligibleRoles: { has: user.role } },
             },
           },
         ],
@@ -619,7 +685,7 @@ approvalsRouter.get("/history", requireAuth, async (req: Request, res: Response)
             },
           },
         },
-        policy: true,
+        policyLevels: { orderBy: { level: "asc" } },
         votes: {
           include: {
             approver: {
@@ -632,7 +698,7 @@ approvalsRouter.get("/history", requireAuth, async (req: Request, res: Response)
       orderBy: { expiresAt: "desc" },
     });
 
-    res.json(history);
+    res.json(history.map((r) => ({ ...r, policy: presentGoverningPolicy(r), policyLevels: undefined })));
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
   }

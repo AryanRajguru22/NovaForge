@@ -10,7 +10,14 @@ import { verifyPasskeyAssertion } from "./webauthn.js";
 // verification) bound to one named purpose, required immediately before a
 // high-impact write -- so a stolen session cookie alone isn't enough.
 
-export type StepUpPurpose = "enrollment-token" | "totp-enroll" | "recovery-codes";
+// "policy-governance" and "user-governance" gate the Phase 1 governance
+// mutations (server/src/lib/governance.ts); the others predate them.
+export type StepUpPurpose =
+  | "enrollment-token"
+  | "totp-enroll"
+  | "recovery-codes"
+  | "policy-governance"
+  | "user-governance";
 
 function challengeKey(purpose: StepUpPurpose, userId: string): string {
   return `step-up:${purpose}:${userId}`;

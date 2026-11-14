@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, apiDelete, apiGet, apiPatch } from "../lib/api.js";
+import { USER_GOVERNANCE_STEP_UP_PATH, governanceProof } from "../lib/stepUp.js";
 import { useAuth } from "../lib/auth.js";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
@@ -61,7 +62,8 @@ export default function UserManagement() {
     setStatus(null);
     setSavingId(user.id);
     try {
-      await apiPatch(`/users/${user.id}/role`, { role });
+      const response = await governanceProof(USER_GOVERNANCE_STEP_UP_PATH);
+      await apiPatch(`/users/${user.id}/role`, { role, response });
       setUsers((current) => current.map((u) => (u.id === user.id ? { ...u, role } : u)));
       setStatus(`${user.name}'s role changed to ${role}.`);
     } catch (err) {
@@ -77,7 +79,8 @@ export default function UserManagement() {
     setStatus(null);
     setSavingId(user.id);
     try {
-      await apiPatch(`/users/${user.id}/weight`, { voteWeight });
+      const response = await governanceProof(USER_GOVERNANCE_STEP_UP_PATH);
+      await apiPatch(`/users/${user.id}/weight`, { voteWeight, response });
       setUsers((current) => current.map((u) => (u.id === user.id ? { ...u, voteWeight } : u)));
       setStatus(`${user.name}'s vote weight changed to ${voteWeight}.`);
     } catch (err) {
@@ -97,7 +100,8 @@ export default function UserManagement() {
     setStatus(null);
     setDeletingId(user.id);
     try {
-      await apiDelete(`/users/${user.id}`);
+      const response = await governanceProof(USER_GOVERNANCE_STEP_UP_PATH);
+      await apiDelete(`/users/${user.id}`, { response });
       setUsers((current) => current.filter((u) => u.id !== user.id));
       setStatus(`${user.name} was deleted.`);
     } catch (err) {

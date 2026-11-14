@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, apiDelete, apiGet, apiPost, apiPut } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
+import { POLICY_STEP_UP_PATH, governanceProof } from "../lib/stepUp.js";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "SENIOR_APPROVER" | "APPROVER" | "MEMBER";
 type QuorumType = "N_OF_M" | "ROLE_BASED" | "WEIGHTED";
@@ -36,14 +37,21 @@ export default function PolicyManagement() {
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError(null); setStatus(null);
     const body = { ...form, fallbackPolicyId: form.fallbackPolicyId || null };
-    try { if (editing) { await apiPut(`/policies/${editing.id}`, body); setStatus("Policy updated."); } else { await apiPost("/policies", body); setStatus("Policy created."); } reset(); await load(); }
-    catch (err) { setError(describeError(err)); } finally { setBusy(false); }
+    try {
+      // Policy changes need a fresh passkey confirmation (enforced by the server).
+      setStatus("Confirm with your passkey…");
+      const response = await governanceProof(POLICY_STEP_UP_PATH);
+      if (editing) { await apiPut(`/policies/${editing.id}`, { ...body, response }); setStatus("Policy updated. Requests already in flight keep the rules they were created under."); }
+      else { await apiPost("/policies", { ...body, response }); setStatus("Policy created."); }
+      reset(); await load();
+    }
+    catch (err) { setStatus(null); setError(describeError(err)); } finally { setBusy(false); }
   }
   async function remove(policy: Policy) {
     if (!window.confirm(`Delete the ${policy.actionType} policy?`)) return;
     setBusy(true); setError(null);
-    try { await apiDelete(`/policies/${policy.id}`); if (editing?.id === policy.id) reset(); setStatus("Policy deleted."); await load(); }
-    catch (err) { setError(describeError(err)); } finally { setBusy(false); }
+    try { setStatus("Confirm with your passkey…"); const response = await governanceProof(POLICY_STEP_UP_PATH); await apiDelete(`/policies/${policy.id}`, { response }); if (editing?.id === policy.id) reset(); setStatus("Policy deleted."); await load(); }
+    catch (err) { setStatus(null); setError(describeError(err)); } finally { setBusy(false); }
   }
 
   async function handleLogout() {

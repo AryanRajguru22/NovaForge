@@ -9,6 +9,7 @@ import {
   cleanupUsers,
   cleanupPolicies,
   runSuffix,
+  createApprovalRequestWithSnapshot,
 } from "./testServer.js";
 import { computeSubjectDigest } from "../src/lib/approvalSignature.js";
 import { prisma } from "../src/lib/prisma.js";
@@ -89,9 +90,7 @@ describe("vote eligibility is re-checked against the locked policy", () => {
     const action = await prisma.sensitiveAction.create({
       data: { type: primaryType, payload: { amount: 3 }, payloadDigest: computeSubjectDigest(primaryType, { amount: 3 }), requestedById: creator.id },
     });
-    const request = await prisma.approvalRequest.create({
-      data: { actionId: action.id, policyId: primaryPolicy.id, expiresAt: new Date(Date.now() + 60_000) },
-    });
+    const request = await createApprovalRequestWithSnapshot({ actionId: action.id, policyId: primaryPolicy.id, expiresAt: new Date(Date.now() + 60_000) });
 
     // Under the original policy the voter is eligible: options succeed and the statement is signed.
     const options = await apiRequest(`/approvals/${request.id}/options`, {
@@ -110,7 +109,7 @@ describe("vote eligibility is re-checked against the locked policy", () => {
         // Mirrors escalation's fallback reassignment; uncommitted, so invisible to the vote's snapshot.
         await tx.approvalRequest.updateMany({
           where: { id: request.id, status: "PENDING" },
-          data: { policyId: fallbackPolicy.id },
+          data: { policyId: fallbackPolicy.id, escalationLevel: 1 },
         });
 
         vote = apiRequest(`/approvals/${request.id}/vote`, {
@@ -135,6 +134,7 @@ describe("vote eligibility is re-checked against the locked policy", () => {
     const dbRequest = await prisma.approvalRequest.findUniqueOrThrow({ where: { id: request.id } });
     expect(dbRequest.status).toBe("PENDING");
     expect(dbRequest.policyId).toBe(fallbackPolicy.id);
+    expect(dbRequest.escalationLevel).toBe(1);
     const dbAction = await prisma.sensitiveAction.findUniqueOrThrow({ where: { id: action.id } });
     expect(dbAction.status).toBe("PENDING");
 

@@ -45,6 +45,15 @@ enum ActionStatus {
   EXPIRED
 }
 
+// Whether a governance snapshot (policy levels on a request, role/weight on a
+// vote) was recorded at the moment it applied, or reconstructed by the
+// phase-1 migration from the data that existed then. BACKFILLED values are
+// the best available fact, not a record of what was true at the time.
+enum SnapshotSource {
+  CAPTURED
+  BACKFILLED
+}
+
 enum VoteDecision {
   APPROVE
   REJECT
@@ -189,18 +198,77 @@ model ApprovalPolicy {
   escalationTimeoutSec Int        @default(300)
 
   approvalRequests ApprovalRequest[]
+  snapshotLevels   ApprovalRequestPolicyLevel[]
 }
 
 model ApprovalRequest {
   id        String          @id @default(uuid())
   actionId  String          @unique
   action    SensitiveAction @relation(fields: [actionId], references: [id])
+  // The policy of the CURRENT escalation level. Kept for display and the
+  // policy-delete guard; it is never an input to a decision. Every rule that
+  // governs this request is read from policyLevels (below), which are frozen
+  // when the request is created.
   policyId  String
   policy    ApprovalPolicy  @relation(fields: [policyId], references: [id])
   status    ActionStatus    @default(PENDING)
   expiresAt DateTime
+  // Index into policyLevels of the rules currently in force. Starts at 0 and
+  // only ever moves to the next level, so escalation terminates after at
+  // most MAX_ESCALATIONS steps (server/src/lib/policySnapshot.ts).
+  escalationLevel Int @default(0)
 
-  votes ApprovalVote[]
+  votes        ApprovalVote[]
+  policyLevels ApprovalRequestPolicyLevel[]
+}
+
+// Immutable snapshot of one level of the policy chain (level 0 = the policy
+// matched at creation, level n+1 = the fallback of level n), captured in the
+// same transaction as the request. Rows can never be updated (trigger in the
+// phase-1 migration), so editing or deleting the live ApprovalPolicy cannot
+// change how an existing request is decided. The whole chain is captured up
+// front, so the request's complete escalation path is fixed at creation.
+model ApprovalRequestPolicyLevel {
+  id                   String          @id @default(uuid())
+  requestId            String
+  request              ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  level                Int
+  // Restrict: a policy that any snapshot still names cannot be deleted.
+  policyId             String
+  policy               ApprovalPolicy  @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  actionType           String
+  quorumType           QuorumType
+  minApprovals         Int
+  eligibleRoles        Role[]
+  escalationTimeoutSec Int
+  // The ApprovalPolicyRevision in force at capture. NULL for BACKFILLED rows
+  // and for policies written without the API (no revision exists).
+  policyRevisionId     String?
+  // Separation of duties: users who authored the captured revision, or any
+  // revision of this policy in the cooling-off window before capture. They
+  // may not vote on this request. Fixed at capture, so it is race-free.
+  conflictedUserIds    String[]
+  source               SnapshotSource  @default(CAPTURED)
+  capturedAt           DateTime        @default(now())
+
+  @@unique([requestId, level])
+  @@index([policyId])
+}
+
+// Append-only history of every create/update/delete of an ApprovalPolicy,
+// written in the same transaction as the change. Deliberately no foreign
+// keys: history must outlive the policy and the editor's account.
+model ApprovalPolicyRevision {
+  id          String   @id @default(uuid())
+  policyId    String
+  version     Int
+  changeType  String // CREATED | UPDATED | DELETED | BACKFILLED
+  changedById String?
+  snapshot    Json
+  createdAt   DateTime @default(now())
+
+  @@unique([policyId, version])
+  @@index([policyId, createdAt])
 }
 
 model ApprovalVote {
@@ -224,6 +292,14 @@ model ApprovalVote {
   clientDataJSON      String?
   authenticatorData   String?
   credentialPublicKey String?
+
+  // The voter's role and vote weight when the vote was recorded, read under a
+  // row lock in the vote transaction. Quorum is tallied from these, never from
+  // the voter's current User row, so a later role or weight change cannot
+  // rewrite what this vote contributed.
+  roleAtVote          Role
+  weightAtVote        Int
+  attributesSource    SnapshotSource  @default(CAPTURED)
 
   // An approver may cast at most one vote per approval request. This used to
   // be enforced only by an application-level findFirst-then-create check

@@ -90,7 +90,8 @@ describe("P0-3: Socket.io authentication and authorization", () => {
   const singleVoteType = `test:socket-security-single-${runSuffix}`;
   const policyChangeType = `test:socket-security-policychange-${runSuffix}`;
   const requesterSurvivesType = `test:socket-security-requester-survives-${runSuffix}`;
-  const allActionTypes = [nOfMType, singleVoteType, policyChangeType, requesterSurvivesType];
+  const policyChangeFallbackType = `test:socket-security-policychange-fallback-${runSuffix}`;
+  const allActionTypes = [nOfMType, singleVoteType, policyChangeType, requesterSurvivesType, policyChangeFallbackType];
 
   let baseUrl = "";
   let requesterUser: { id: string; token: string };
@@ -412,9 +413,23 @@ describe("P0-3: Socket.io authentication and authorization", () => {
     }
   });
 
-  it("TEST 15: an eligibleRoles change on the request's policy is reflected on the very next join", async () => {
+  // Phase 1: a request's rules are an immutable snapshot, so editing the LIVE
+  // policy no longer changes who may watch an existing request. What can
+  // change eligibility mid-life is escalation to the next pre-captured level;
+  // that is reflected on the very next join, as the live-policy edit used to be.
+  it("TEST 15: an escalation to a level with different eligibleRoles is reflected on the very next join; editing the live policy is not", async () => {
+    const fallback = await prisma.approvalPolicy.create({
+      data: { actionType: policyChangeFallbackType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["SENIOR_APPROVER"], escalationTimeoutSec: 300 },
+    });
     const policy = await prisma.approvalPolicy.create({
-      data: { actionType: policyChangeType, quorumType: "N_OF_M", minApprovals: 1, eligibleRoles: ["APPROVER"], escalationTimeoutSec: 300 },
+      data: {
+        actionType: policyChangeType,
+        quorumType: "N_OF_M",
+        minApprovals: 1,
+        eligibleRoles: ["APPROVER"],
+        escalationTimeoutSec: 300,
+        fallbackPolicyId: fallback.id,
+      },
     });
     const request = await createRequest(requesterUser.token, policyChangeType, 15);
     const requestId = request.approvalRequest.id;
@@ -425,8 +440,12 @@ describe("P0-3: Socket.io authentication and authorization", () => {
       const before = await joinRequest(socket, requestId);
       expect(before).toEqual({ ok: true });
 
+      // Editing the live policy does not touch the request's frozen rules.
       await prisma.approvalPolicy.update({ where: { id: policy.id }, data: { eligibleRoles: ["SENIOR_APPROVER"] } });
+      expect(await joinRequest(socket, requestId)).toEqual({ ok: true });
 
+      // Escalation (what checkEscalations does) moves to level 1: SENIOR_APPROVER only.
+      await prisma.approvalRequest.update({ where: { id: requestId }, data: { escalationLevel: 1, policyId: fallback.id } });
       const after = await joinRequest(socket, requestId);
       expect(after.ok).toBe(false);
     } finally {

@@ -149,6 +149,8 @@ describe("approval voting and quorum resolution", () => {
           decision: "APPROVE",
           signature,
           deviceId: `mock-cred-${approver1.id}`,
+          roleAtVote: "APPROVER",
+          weightAtVote: 1,
         },
       });
 

@@ -75,8 +75,15 @@ export async function apiGet<T>(path: string): Promise<T> {
   return request<T>(path, { method: "GET" });
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  return request<T>(path, { method: "DELETE" });
+// `body` carries a step-up proof for governance deletions
+// (see lib/stepUp.ts); other deletes send none.
+export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
+  if (body === undefined) return request<T>(path, { method: "DELETE" });
+  return request<T>(path, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {
