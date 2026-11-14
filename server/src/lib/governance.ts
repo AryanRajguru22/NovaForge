@@ -20,7 +20,7 @@ export const SUPER_ADMIN_SET_LOCK_KEY = 727002;
 
 // "enrollment-token" (older purpose) also gates issuing enrollment links and invitations: both grant a
 // credential, and an invitation can create a SUPER_ADMIN, so they get the same trust check and audited refusals.
-export type GovernancePurpose = Extract<StepUpPurpose, "policy-governance" | "user-governance" | "enrollment-token">;
+export type GovernancePurpose = Extract<StepUpPurpose, "policy-governance" | "user-governance" | "app-governance" | "enrollment-token">;
 
 async function recordGovernanceRefusal(
   actorId: string,

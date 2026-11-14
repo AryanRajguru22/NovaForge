@@ -181,8 +181,9 @@ export async function cleanupPolicies(actionTypes: string[]) {
  * a single-use challenge, sign it with the actor's software authenticator.
  * The actor needs a passkey (addMockPasskey).
  */
-export async function governanceProof(actor: { id: string; token: string }, kind: "policy" | "user") {
-  const path = kind === "policy" ? "/policies/step-up/options" : "/users/governance/step-up/options";
+export async function governanceProof(actor: { id: string; token: string }, kind: "policy" | "user" | "app") {
+  const path =
+    kind === "policy" ? "/policies/step-up/options" : kind === "app" ? "/applications/step-up/options" : "/users/governance/step-up/options";
   const options = await apiRequest(path, { method: "POST", token: actor.token, body: {} });
   if (options.status !== 200) throw new Error(`step-up options failed: ${options.status} ${JSON.stringify(options.data)}`);
   return authenticatorFor(actor.id).createAssertion(options.data.challenge);

@@ -76,13 +76,15 @@ model User {
   statusChangedAt          DateTime?
   createdAt                DateTime      @default(now())
 
-  credentials       Credential[]
-  sessions          Session[]
-  requestedActions  SensitiveAction[] @relation("RequestedBy")
-  votes             ApprovalVote[]
-  auditEvents       AuditLog[]
-  enrollmentTokens  EnrollmentToken[] @relation("EnrollmentTarget")
-  issuedEnrollments EnrollmentToken[] @relation("EnrollmentIssuer")
+  credentials        Credential[]
+  sessions           Session[]
+  requestedActions   SensitiveAction[]   @relation("RequestedBy")
+  votes              ApprovalVote[]
+  auditEvents        AuditLog[]
+  enrollmentTokens   EnrollmentToken[]   @relation("EnrollmentTarget")
+  issuedEnrollments  EnrollmentToken[]   @relation("EnrollmentIssuer")
+  appRoleAssignments AppRoleAssignment[] @relation("AssignmentSubject")
+  oauthGrants        OAuthGrant[]
 }
 
 model Credential {
@@ -167,6 +169,12 @@ model Session {
   previousRefreshTokenId String?
   rotatedAt              DateTime?
 
+  // OAuth grants issued during this browser session. Deleting the session
+  // (sign-out, revoke-a-device, account disable) deletes them, which is what
+  // makes every relying application's refresh token and access token stop
+  // working immediately (server/src/lib/oauth/tokens.ts, introspection).
+  oauthGrants OAuthGrant[]
+
   @@index([userId])
 }
 
@@ -202,21 +210,21 @@ model ApprovalPolicy {
 }
 
 model ApprovalRequest {
-  id        String          @id @default(uuid())
-  actionId  String          @unique
-  action    SensitiveAction @relation(fields: [actionId], references: [id])
+  id              String          @id @default(uuid())
+  actionId        String          @unique
+  action          SensitiveAction @relation(fields: [actionId], references: [id])
   // The policy of the CURRENT escalation level. Kept for display and the
   // policy-delete guard; it is never an input to a decision. Every rule that
   // governs this request is read from policyLevels (below), which are frozen
   // when the request is created.
-  policyId  String
-  policy    ApprovalPolicy  @relation(fields: [policyId], references: [id])
-  status    ActionStatus    @default(PENDING)
-  expiresAt DateTime
+  policyId        String
+  policy          ApprovalPolicy  @relation(fields: [policyId], references: [id])
+  status          ActionStatus    @default(PENDING)
+  expiresAt       DateTime
   // Index into policyLevels of the rules currently in force. Starts at 0 and
   // only ever moves to the next level, so escalation terminates after at
   // most MAX_ESCALATIONS steps (server/src/lib/policySnapshot.ts).
-  escalationLevel Int @default(0)
+  escalationLevel Int             @default(0)
 
   votes        ApprovalVote[]
   policyLevels ApprovalRequestPolicyLevel[]
@@ -297,9 +305,9 @@ model ApprovalVote {
   // row lock in the vote transaction. Quorum is tallied from these, never from
   // the voter's current User row, so a later role or weight change cannot
   // rewrite what this vote contributed.
-  roleAtVote          Role
-  weightAtVote        Int
-  attributesSource    SnapshotSource  @default(CAPTURED)
+  roleAtVote       Role
+  weightAtVote     Int
+  attributesSource SnapshotSource @default(CAPTURED)
 
   // An approver may cast at most one vote per approval request. This used to
   // be enforced only by an application-level findFirst-then-create check
@@ -376,4 +384,182 @@ model ServiceCredential {
   lastUsedAt       DateTime?
 
   @@index([serviceAccountId])
+}
+
+// ---------------------------------------------------------------------------
+// OAuth 2.0 / OpenID Connect provider and per-application authorization
+// (server/src/lib/oauth, server/src/routes/oauth.ts, routes/applications.ts)
+// ---------------------------------------------------------------------------
+
+enum OAuthClientType {
+  CONFIDENTIAL // can keep a secret: authenticates at the token endpoint
+  PUBLIC // browser / native app: no secret, PKCE is its only proof
+}
+
+// A registered relying application (client). `audience` is the `aud` of the
+// access tokens minted for it, and is what resource servers pin.
+model OAuthClient {
+  id                     String          @id @default(uuid())
+  clientId               String          @unique
+  name                   String
+  description            String?
+  type                   OAuthClientType @default(CONFIDENTIAL)
+  status                 AccountStatus   @default(ACTIVE)
+  // Compared byte-for-byte; never prefix- or wildcard-matched.
+  redirectUris           String[]
+  postLogoutRedirectUris String[]
+  allowedScopes          String[]
+  audience               String          @unique
+  // true: any user with no role in this application is refused (default-deny).
+  requireAssignment      Boolean         @default(true)
+  accessTokenTtlSec      Int             @default(600)
+  refreshTokenTtlSec     Int             @default(2592000)
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  createdById            String?
+
+  secrets     OAuthClientSecret[]
+  permissions AppPermission[]
+  roles       AppRole[]
+  assignments AppRoleAssignment[]
+  codes       AuthorizationCode[]
+  grants      OAuthGrant[]
+}
+
+// Several secrets may be live at once so a credential can be rotated without
+// downtime: issue a new one, deploy it, then revoke the old one. Only the
+// SHA-256 of the (256-bit random) secret is stored.
+model OAuthClientSecret {
+  id         String      @id @default(uuid())
+  clientId   String
+  client     OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  secretHash String
+  label      String?
+  createdAt  DateTime    @default(now())
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+
+  @@index([clientId])
+}
+
+model AppPermission {
+  id          String      @id @default(uuid())
+  clientId    String
+  client      OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  key         String
+  description String?
+  createdAt   DateTime    @default(now())
+
+  roles AppRolePermission[]
+
+  @@unique([clientId, key])
+}
+
+model AppRole {
+  id          String      @id @default(uuid())
+  clientId    String
+  client      OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  key         String
+  name        String
+  description String?
+  createdAt   DateTime    @default(now())
+
+  permissions AppRolePermission[]
+  assignments AppRoleAssignment[]
+
+  @@unique([clientId, key])
+}
+
+model AppRolePermission {
+  roleId       String
+  role         AppRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   AppPermission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+// A user holding a role in one application, optionally limited to a resource
+// ("*" = the whole application; "a/b" exact; "a/*" prefix) and/or an expiry.
+// clientId is denormalised from the role and kept consistent by a trigger so
+// per-application queries never need a join, and so a role can never be
+// assigned across applications.
+model AppRoleAssignment {
+  id          String      @id @default(uuid())
+  clientId    String
+  client      OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  roleId      String
+  role        AppRole     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User        @relation("AssignmentSubject", fields: [userId], references: [id], onDelete: Cascade)
+  resource    String      @default("*")
+  grantedById String?
+  createdAt   DateTime    @default(now())
+  expiresAt   DateTime?
+
+  @@unique([roleId, userId, resource])
+  @@index([clientId, userId])
+}
+
+// Single-use, 60-second authorization code. Only its SHA-256 is stored.
+model AuthorizationCode {
+  id            String      @id @default(uuid())
+  codeHash      String      @unique
+  clientId      String
+  client        OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  grantId       String
+  grant         OAuthGrant  @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  userId        String
+  redirectUri   String
+  scope         String
+  codeChallenge String
+  nonce         String?
+  authTime      DateTime
+  createdAt     DateTime    @default(now())
+  expiresAt     DateTime
+  consumedAt    DateTime?
+
+  @@index([clientId])
+}
+
+// One user's authorisation of one application, tied to one NovaForge session.
+// It is the refresh-token family: refresh tokens rotate within it and reuse of
+// a spent one revokes the whole grant.
+model OAuthGrant {
+  id            String      @id @default(uuid())
+  clientId      String
+  client        OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId     String
+  session       Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  scope         String
+  authTime      DateTime
+  createdAt     DateTime    @default(now())
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+
+  refreshTokens OAuthRefreshToken[]
+  codes         AuthorizationCode[]
+
+  @@index([userId])
+  @@index([clientId])
+  @@index([sessionId])
+}
+
+model OAuthRefreshToken {
+  id           String     @id @default(uuid())
+  grantId      String
+  grant        OAuthGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  tokenHash    String     @unique
+  createdAt    DateTime   @default(now())
+  expiresAt    DateTime
+  // Set when this token has been exchanged for its successor. Presenting a
+  // spent token again is treated as theft and revokes the grant.
+  usedAt       DateTime?
+  replacedById String?
+
+  @@index([grantId])
 }

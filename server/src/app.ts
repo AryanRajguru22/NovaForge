@@ -24,6 +24,10 @@ import { auditRouter } from "./routes/audit.js";
 import { usersRouter } from "./routes/users.js";
 import { internalRouter } from "./routes/internal.js";
 import { serviceAccountsRouter } from "./routes/serviceAccounts.js";
+import { applicationsRouter } from "./routes/applications.js";
+import { oauthRouter, serveDiscovery, v1Router } from "./routes/oauth.js";
+import { securityHeaders } from "./middleware/securityHeaders.js";
+import { prisma } from "./lib/prisma.js";
 import { requestContextMiddleware } from "./lib/requestContext.js";
 import { getPublicJwks, IdentityKeysUnavailableError } from "./lib/identityKeys.js";
 import { initEscalationService } from "./lib/escalation.js";
@@ -42,13 +46,32 @@ if (process.env.TRUST_PROXY) {
   const value = process.env.TRUST_PROXY;
   app.set("trust proxy", /^\d+$/.test(value) ? Number(value) : value === "true" ? true : value);
 }
+app.disable("x-powered-by");
 app.use(requestContextMiddleware);
-app.use(cors({ origin: env.rpOrigin, credentials: true }));
-app.use(express.json());
+app.use(securityHeaders);
+// Discovery, JWKS and the token/userinfo endpoints are called by other origins
+// with no cookies, so they get open (credential-less) CORS. Everything else is
+// the NovaForge SPA's API and only answers its own origin, with credentials.
+const openCors = cors({ origin: "*", credentials: false, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Authorization", "Content-Type"] });
+const appCors = cors({ origin: env.rpOrigin, credentials: true });
+const OPEN_CORS_PATH = /^(\/api)?(\/\.well-known\/|\/oauth\/(token|userinfo)$)/;
+app.use((req, res, next) => (OPEN_CORS_PATH.test(req.path) ? openCors(req, res, next) : appCors(req, res, next)));
+app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 app.use(cookieParser());
 
+// Liveness: the process is up. Readiness: it can actually serve (database
+// reachable). Neither reveals configuration.
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
+});
+app.get(["/ready", "/api/ready"], async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "ready" });
+  } catch {
+    res.status(503).json({ status: "unavailable" });
+  }
 });
 
 // Public verification keys for identity assertions issued to relying
@@ -67,6 +90,8 @@ function serveJwks(_req: express.Request, res: express.Response): void {
 }
 app.get("/.well-known/jwks.json", serveJwks);
 app.get("/api/.well-known/jwks.json", serveJwks);
+app.get("/.well-known/openid-configuration", serveDiscovery);
+app.get("/api/.well-known/openid-configuration", serveDiscovery);
 
 // Whether a client build is sitting next to this file — true for the
 // combined Render deploy image, false for local dev and for the
@@ -91,6 +116,9 @@ apiRouter.use("/approvals", approvalsRouter);
 apiRouter.use("/audit", auditRouter);
 apiRouter.use("/users", usersRouter);
 apiRouter.use("/service-accounts", serviceAccountsRouter);
+apiRouter.use("/applications", applicationsRouter);
+apiRouter.use("/oauth", oauthRouter);
+apiRouter.use("/v1", v1Router);
 apiRouter.use("/internal", internalRouter);
 // Bare mount is only for docker-compose's server container, where nginx has
 // already stripped the /api prefix before proxying here — a client isn't

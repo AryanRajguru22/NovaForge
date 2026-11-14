@@ -12,3 +12,7 @@ PLAN.md
 NOTES.md
 CLAUDE.md
 /docs/local/
+
+# Generated local development signing key
+.dev/
+server/.dev/

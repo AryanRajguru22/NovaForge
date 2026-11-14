@@ -17,7 +17,8 @@ export type StepUpPurpose =
   | "totp-enroll"
   | "recovery-codes"
   | "policy-governance"
-  | "user-governance";
+  | "user-governance"
+  | "app-governance";
 
 function challengeKey(purpose: StepUpPurpose, userId: string): string {
   return `step-up:${purpose}:${userId}`;
