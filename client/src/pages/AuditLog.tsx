@@ -115,6 +115,7 @@ export default function AuditLog() {
           <Link to="/policies" className="link-quiet">Policies</Link>
           {user?.role === "SUPER_ADMIN" && <Link to="/audit" className="font-semibold text-parchment-100">Audit log</Link>}
           {user?.role === "SUPER_ADMIN" && <Link to="/users" className="link-quiet">Users</Link>}
+          {(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN") && <Link to="/applications" className="link-quiet">Applications</Link>}
           <Link to="/settings" className="link-quiet">Security Settings</Link>
           <button type="button" onClick={handleLogout} className="link-quiet">Sign out</button>
         </nav>

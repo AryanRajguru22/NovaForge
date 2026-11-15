@@ -7,6 +7,7 @@ import PolicyManagement from "./pages/PolicyManagement.js";
 import AuditLog from "./pages/AuditLog.js";
 import UserManagement from "./pages/UserManagement.js";
 import OAuthSignIn from "./pages/OAuthSignIn.js";
+import Applications from "./pages/Applications.js";
 import { refreshSession } from "./lib/api.js";
 import { AuthProvider } from "./lib/auth.js";
 import { ProtectedRoute, PublicOnlyRoute } from "./components/RouteGuards.js";
@@ -93,6 +94,7 @@ export default function App() {
           <Route path="/policies" element={<PolicyManagement />} />
           <Route path="/audit" element={<AuditLog />} />
           <Route path="/users" element={<UserManagement />} />
+          <Route path="/applications" element={<Applications />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>

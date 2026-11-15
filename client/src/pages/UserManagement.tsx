@@ -120,6 +120,7 @@ export default function UserManagement() {
           <Link to="/policies" className="link-quiet">Policies</Link>
           {authUser?.role === "SUPER_ADMIN" && <Link to="/audit" className="link-quiet">Audit log</Link>}
           {authUser?.role === "SUPER_ADMIN" && <Link to="/users" className="font-semibold text-parchment-100">Users</Link>}
+          {(authUser?.role === "SUPER_ADMIN" || authUser?.role === "ADMIN") && <Link to="/applications" className="link-quiet">Applications</Link>}
           <Link to="/settings" className="link-quiet">Security Settings</Link>
           <button type="button" onClick={handleLogout} className="link-quiet">Sign out</button>
         </nav>

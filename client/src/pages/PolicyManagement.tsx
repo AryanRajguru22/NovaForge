@@ -67,6 +67,7 @@ export default function PolicyManagement() {
           <Link to="/policies" className="font-semibold text-parchment-100">Policies</Link>
           {user?.role === "SUPER_ADMIN" && <Link to="/audit" className="link-quiet">Audit log</Link>}
           {user?.role === "SUPER_ADMIN" && <Link to="/users" className="link-quiet">Users</Link>}
+          {(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN") && <Link to="/applications" className="link-quiet">Applications</Link>}
           <Link to="/settings" className="link-quiet">Security Settings</Link>
           <button type="button" onClick={handleLogout} className="link-quiet">Sign out</button>
         </nav>

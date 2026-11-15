@@ -10,6 +10,7 @@ import { apiPost } from "./api.js";
 // boundary, it only lets the legitimate flow complete.
 export const POLICY_STEP_UP_PATH = "/policies/step-up/options";
 export const USER_GOVERNANCE_STEP_UP_PATH = "/users/governance/step-up/options";
+export const APPLICATION_STEP_UP_PATH = "/applications/step-up/options";
 
 export async function governanceProof(optionsPath: string) {
   const options = await apiPost<PublicKeyCredentialRequestOptionsJSON>(optionsPath, {});
