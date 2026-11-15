@@ -27,5 +27,13 @@ RUN npx prisma generate
 
 COPY --from=build /app/dist ./dist
 
+# Run unprivileged. Nothing at runtime needs root: migrations only talk to the
+# database over the network.
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 4000
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# `exec` makes node the main process so it receives SIGTERM and shuts down
+# gracefully (server/src/index.ts) instead of being killed by the shell wrapper.
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/index.js"]

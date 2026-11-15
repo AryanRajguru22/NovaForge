@@ -34,6 +34,21 @@ services:
         value: NovaForge
       - key: NODE_ENV
         value: production
+      # One proxy hop (Render's edge) sits in front of the service; without
+      # this every visitor shares one IP for rate limiting.
+      - key: TRUST_PROXY
+        value: "1"
+      # Required in production -- the server refuses to boot without them.
+      # Set these by hand in the dashboard (never commit them):
+      #   IDENTITY_ISSUER              https://<your-service>.onrender.com
+      #   IDENTITY_SIGNING_KEY_ID      e.g. nf-2026-01
+      #   IDENTITY_SIGNING_PRIVATE_KEY PKCS#8 P-256 PEM (see server/.env.example)
+      - key: IDENTITY_ISSUER
+        sync: false
+      - key: IDENTITY_SIGNING_KEY_ID
+        sync: false
+      - key: IDENTITY_SIGNING_PRIVATE_KEY
+        sync: false
       # RP_ID and RP_ORIGIN are deliberately unset — server/src/lib/env.ts
       # derives both from Render's auto-injected RENDER_EXTERNAL_URL, so
       # they can't drift from the real assigned *.onrender.com URL.

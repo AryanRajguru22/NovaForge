@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the workflow only ever reads the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server (typecheck, migrations, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nfci
+          POSTGRES_PASSWORD: nfci
+          POSTGRES_DB: nfci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nfci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Throwaway values for an ephemeral CI database. None of these protect
+      # anything: they exist only because the server refuses to boot without them.
+      DATABASE_URL: postgresql://nfci:nfci@localhost:5432/nfci
+      JWT_ACCESS_SECRET: ci-only-access-secret-not-used-anywhere-else
+      JWT_REFRESH_SECRET: ci-only-refresh-secret-not-used-anywhere-else
+      TOTP_ENCRYPTION_KEY: ci-only-totp-encryption-key-not-used-anywhere
+      RP_ID: localhost
+      RP_NAME: NovaForge
+      RP_ORIGIN: http://localhost:5173
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - name: Validate Prisma schema
+        run: npx prisma validate
+      - name: Apply migrations to an empty database
+        run: npx prisma migrate deploy
+      - name: Schema and migrations agree (no drift)
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: Build
+        run: npm run build
+      - name: Tests (real PostgreSQL)
+        run: npm test
+      - name: Dependency audit (production, high and above)
+        run: npm audit --omit=dev --audit-level=high
+
+  client:
+    name: Client (lint, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Dependency audit (production, high and above)
+        run: npm audit --omit=dev --audit-level=high
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Server image
+        run: docker build -t novaforge-server:ci server
+      - name: Client image
+        run: docker build -t novaforge-client:ci client
+      - name: Combined (single-origin) image
+        run: docker build -f Dockerfile.render -t novaforge-combined:ci .

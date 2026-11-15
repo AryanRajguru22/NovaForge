@@ -10,6 +10,14 @@
 
 > **Repository identity note.** The task names `github.com/DevOps-Tally/NovaForge`. This checkout's `origin` is `https://github.com/AryanRajguru22/NovaForge.git` and is in sync with it (`main...origin/main` = 0/0, `git ls-remote` returns `5f3a2a6`). `git ls-remote` against `DevOps-Tally/NovaForge` returns `main` = **`ca576c6`** — i.e. **the four security commits (`0401bba`, `406deb2`, `223830d`, `5f3a2a6`) are not in the org repository**; they exist only in the personal repository. This matters for hackathon submission and for Section 11.
 
+> **Addendum, 2026-11-15 — this audit is a historical snapshot.** It describes commit `5f3a2a6`.
+> Since then Phase 1 governance integrity (`73841bc`), the OIDC provider (`d8ebd3b`) and the operator CLI
+> (`d98fec4`) landed, and a further hardening pass fixed or re-classified most remaining findings
+> (first-admin bootstrap, config validation, security headers, proxy/rate-limit handling, dependency
+> advisories, DB terminal-state guards, CI, container hardening). **The current status of every finding
+> F-01 … F-16 is in [SECURITY.md](./SECURITY.md#3-findings-ledger); where the two disagree, SECURITY.md
+> is correct.** The body below is left unmodified so the original evidence remains reviewable.
+
 ---
 
 ## Section 1 — Executive Summary

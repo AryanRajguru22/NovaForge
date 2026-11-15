@@ -1,13 +1,23 @@
+# Local demo stack: PostgreSQL + API + nginx-served client, over plain HTTP on
+# localhost. It is NOT a production deployment (see README, "Deployment").
+#
+#   docker compose up --build            # http://localhost:8080
+#   POSTGRES_PORT=55432 CLIENT_PORT=18080 docker compose -p nf-second up --build   # a second, isolated copy
+#
+# The server runs with NODE_ENV=development here on purpose: production mode
+# refuses to boot on placeholder secrets and requires a signing key and an
+# https origin, none of which a localhost demo has. Never expose this stack to a
+# network you do not control.
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: novaforge
-      POSTGRES_PASSWORD: novaforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-novaforge}
       POSTGRES_DB: novaforge
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - novaforge_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -26,10 +36,16 @@ services:
       # Overrides .env values that only make sense on the host (localhost DB,
       # localhost origin) with the values that make sense inside the compose
       # network / behind the client's nginx proxy.
-      DATABASE_URL: postgresql://novaforge:novaforge@postgres:5432/novaforge
-      RP_ORIGIN: http://localhost:8080
+      NODE_ENV: development
+      DATABASE_URL: postgresql://novaforge:${POSTGRES_PASSWORD:-novaforge}@postgres:5432/novaforge
+      RP_ORIGIN: http://localhost:${CLIENT_PORT:-8080}
+      IDENTITY_ISSUER: http://localhost:${CLIENT_PORT:-8080}
+      # nginx is exactly one proxy hop in front of the server.
+      TRUST_PROXY: "1"
     ports:
-      - "4000:4000"
+      # Loopback only: with TRUST_PROXY set, a directly reachable server would
+      # let any client choose its own rate-limit identity via X-Forwarded-For.
+      - "127.0.0.1:${SERVER_PORT:-4000}:4000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,9 +55,10 @@ services:
       context: ./client
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "${CLIENT_PORT:-8080}:80"
     depends_on:
-      - server
+      server:
+        condition: service_healthy
 
 volumes:
   novaforge_pgdata:
