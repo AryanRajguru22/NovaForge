@@ -389,11 +389,21 @@ describe("OIDC provider", () => {
       expect(refresh.status).toBe(400);
     });
 
-    it("allows only one of many concurrent redemptions of the same code", async () => {
+    it("never lets more than one of many concurrent redemptions of the same code succeed", async () => {
       const a = await authorize(appA, alice);
       const form = { grant_type: "authorization_code", code: a.url!.searchParams.get("code")!, redirect_uri: REDIRECT, code_verifier: a.pk.verifier };
       const results = await Promise.all(Array.from({ length: 6 }, () => tokenRequest(appA, form)));
-      expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+      // At most one redemption wins. Zero is also correct: the duplicates are treated as a replay
+      // (RFC 6749 4.1.2) and revoke the grant, which can reach the winner before it issues tokens.
+      // That fails closed; what must never happen is two token sets or a server error.
+      const wins = results.filter((r) => r.status === 200);
+      expect(wins.length).toBeLessThanOrEqual(1);
+      for (const r of results.filter((x) => x.status !== 200)) {
+        expect(r.status).toBe(400);
+        expect(r.data.error).toBe("invalid_grant");
+      }
+      // Whatever happened, the code cannot be redeemed again afterwards.
+      expect((await tokenRequest(appA, form)).status).toBe(400);
     });
 
     it("does not cache token responses", async () => {

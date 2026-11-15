@@ -7,7 +7,7 @@ it does **not** mean independently audited (see [SECURITY.md](./SECURITY.md)).
 
 | Suite | Command | Result at last full run |
 |---|---|---|
-| Server (Vitest, real PostgreSQL 16) | `cd server && npm test` | Last full run: 31 files, 329 tests, all passing (after the hardening work). Two files were added afterwards (`env-config`, 12 tests) and passed on their own; a full re-run (expected 32 files / 341 tests) is pending |
+| Server (Vitest, real PostgreSQL 16) | `cd server && npm test` | 32 files, 341 tests, all passing (2026-11-15, native PostgreSQL 16.15; see [FINAL_RELEASE_READINESS_REPORT.md](./FINAL_RELEASE_READINESS_REPORT.md)) |
 | Client (Vitest + Testing Library, jsdom) | `cd client && npm test` | 4 files, 35 tests, all passing |
 | Client lint | `cd client && npm run lint` | clean, no rules disabled |
 | Server typecheck | `cd server && npx tsc -p tsconfig.json --noEmit` | clean |
