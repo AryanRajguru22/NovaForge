@@ -1,5 +1,6 @@
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "../lib/auth.js";
+import { postLoginDestination } from "../lib/oauthResume.js";
 
 function Checking() {
   return <div className="font-mono p-8 text-sm text-ash-400">Loading…</div>;
@@ -22,6 +23,6 @@ export function ProtectedRoute() {
 export function PublicOnlyRoute() {
   const { status } = useAuth();
   if (status === "loading") return <Checking />;
-  if (status === "authenticated") return <Navigate to="/approvals" replace />;
+  if (status === "authenticated") return <Navigate to={postLoginDestination()} replace />;
   return <Outlet />;
 }

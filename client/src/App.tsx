@@ -6,6 +6,7 @@ import ApprovalDashboard from "./pages/ApprovalDashboard.js";
 import PolicyManagement from "./pages/PolicyManagement.js";
 import AuditLog from "./pages/AuditLog.js";
 import UserManagement from "./pages/UserManagement.js";
+import OAuthSignIn from "./pages/OAuthSignIn.js";
 import { refreshSession } from "./lib/api.js";
 import { AuthProvider } from "./lib/auth.js";
 import { ProtectedRoute, PublicOnlyRoute } from "./components/RouteGuards.js";
@@ -30,8 +31,8 @@ function Home() {
 
         <p className="font-serif mt-8 max-w-xl text-lg leading-relaxed text-ash-300 text-balance">
           Every sign-in proves a key, not a password. Every sensitive action sits in the fire until
-          enough signed hands have touched it — then it's struck, sealed, and written to a ledger
-          nobody can quietly edit.
+          enough signed hands have touched it — then it's struck, sealed, and written to a hash-chained
+          ledger that shows when history has been altered.
         </p>
 
         <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-3">
@@ -55,7 +56,7 @@ function Home() {
         <div className="ledger-rule mt-16 grid grid-cols-1 gap-8 pt-8 sm:grid-cols-3">
           <Ledger index="I" title="Anchor" body="Passkeys, WebAuthn-signed. No password ever leaves the device." />
           <Ledger index="II" title="Quorum" body="N-of-M or role-based approval before any sensitive action clears." />
-          <Ledger index="III" title="Ledger" body="Hash-chained audit trail — tamper anywhere, break the chain everywhere after." />
+          <Ledger index="III" title="Ledger" body="Hash-chained audit trail — alter an entry and every later link stops verifying." />
         </div>
       </div>
     </div>
@@ -83,6 +84,7 @@ export default function App() {
     <AuthProvider>
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/oauth/signin" element={<OAuthSignIn />} />
         <Route element={<PublicOnlyRoute />}>
           <Route path="/login" element={<Login />} />
         </Route>

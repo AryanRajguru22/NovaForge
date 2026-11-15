@@ -298,18 +298,14 @@ export default function ApprovalDashboard() {
     socket.on("escalated", handleSocketUpdate);
 
     // The server's io.use() middleware (server/src/lib/socketSecurity.ts)
-    // rejects a connection whenever the session cookie is missing, invalid,
-    // or no longer live -- the only reason this fires in this app. Retrying
-    // that indefinitely (socket.io-client's default reconnection behavior)
-    // would just hammer the server forever after a logout or a revoked
-    // session, so a rejected connection stops trying rather than looping.
-    // The trade-off: a transient network-level failure also stops retrying
-    // here rather than being distinguished from an auth failure, since the
-    // two aren't distinguishable from a connect_error alone -- acceptable
-    // given the dashboard already re-fetches over REST on other triggers,
-    // and the user can always reload.
-    socket.on("connect_error", () => {
-      socket.disconnect();
+    // rejects a handshake with the message "Authentication required" whenever
+    // the session cookie is missing, invalid or no longer live. Retrying that
+    // indefinitely would hammer the server after a logout or a revoked session,
+    // so an auth rejection stops trying. Any other connect error (network drop,
+    // server restart, proxy hiccup) is left to socket.io-client's built-in
+    // exponential-backoff reconnection, so live updates resume by themselves.
+    socket.on("connect_error", (err) => {
+      if (err.message === "Authentication required") socket.disconnect();
     });
 
     // A dropped-and-restored connection re-joins whatever request is
@@ -445,7 +441,7 @@ export default function ApprovalDashboard() {
       });
       setQrCodeUrl(codeUrl);
       setShowQRModal(true);
-    } catch (err) {
+    } catch {
       setError("Failed to initialize second device flow. QR generation failed.");
     }
   }

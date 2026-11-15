@@ -7,6 +7,7 @@ import type {
 } from "@simplewebauthn/types";
 import { apiPost, ApiError } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
+import { postLoginDestination } from "../lib/oauthResume.js";
 
 type Mode = "login" | "register" | "enroll" | "totp" | "recovery";
 
@@ -106,7 +107,7 @@ export default function Login() {
       await apiPost<{ user: MeResponse }>("/auth/login/verify", { email, response });
 
       await refresh();
-      navigate("/approvals", { replace: true });
+      navigate(postLoginDestination(), { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -123,7 +124,7 @@ export default function Login() {
       setStatus("Verifying code…");
       await apiPost<{ user: MeResponse }>("/auth/login/totp", { email, token: code });
       await refresh();
-      navigate("/approvals", { replace: true });
+      navigate(postLoginDestination(), { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -143,7 +144,7 @@ export default function Login() {
         code: recoveryCode,
       });
       await refresh();
-      navigate("/approvals", { replace: true });
+      navigate(postLoginDestination(), { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {
