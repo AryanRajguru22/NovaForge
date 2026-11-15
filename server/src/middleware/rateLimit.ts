@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 
 interface Bucket {
@@ -6,6 +7,32 @@ interface Bucket {
 }
 
 const buckets = new Map<string, Bucket>();
+
+// Memory bound. Keys include request-controlled text (an email, a client id),
+// so without a cap a client could grow this map without limit by sending
+// distinct values. Expired buckets are purged first; if the map is still over
+// the cap the oldest entries (Map preserves insertion order) are dropped.
+// Dropping a live bucket only ever *resets* a limit, which is the safe
+// direction for a first-line burst limiter -- the database-backed throttle in
+// authThrottle.ts is the authoritative per-account control.
+export const MAX_BUCKETS = 20_000;
+
+function enforceBucketCap(now: number): void {
+  if (buckets.size <= MAX_BUCKETS) return;
+  for (const [key, bucket] of buckets) if (bucket.resetAt < now) buckets.delete(key);
+  if (buckets.size <= MAX_BUCKETS) return;
+  const excess = buckets.size - Math.floor(MAX_BUCKETS * 0.9);
+  let removed = 0;
+  for (const key of buckets.keys()) {
+    if (removed++ >= excess) break;
+    buckets.delete(key);
+  }
+}
+
+/** Test-only: number of live buckets. */
+export function bucketCount(): number {
+  return buckets.size;
+}
 
 /**
  * Fixed-window rate limiter keyed by IP + route + an optional identity
@@ -24,13 +51,16 @@ export function rateLimit(opts: {
   identity?: (req: Request) => string;
 }) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const identity = opts.identity ? opts.identity(req) : "";
+    const rawIdentity = opts.identity ? opts.identity(req) : "";
+    // Long identities are hashed so a key is always short and bounded.
+    const identity = rawIdentity.length > 64 ? createHash("sha256").update(rawIdentity).digest("hex") : rawIdentity;
     const key = `${req.ip}:${req.baseUrl}${req.path}:${identity}`;
     const now = Date.now();
 
     const bucket = buckets.get(key);
     if (!bucket || bucket.resetAt < now) {
       buckets.set(key, { count: 1, resetAt: now + opts.windowMs });
+      enforceBucketCap(now);
       next();
       return;
     }

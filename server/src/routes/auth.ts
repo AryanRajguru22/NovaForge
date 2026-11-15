@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { createHmac, randomInt, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { authenticator } from "otplib";
@@ -383,6 +383,11 @@ authRouter.post("/enroll/verify", enrollmentLimit, async (req, res) => {
 
 // --- Login ---
 
+/** Stable per-email fake credential id, derived with a server secret so it cannot be precomputed. */
+function decoyCredentialId(email: string): string {
+  return createHmac("sha256", env.jwtAccessSecret).update(`login-decoy:${email}`).digest("base64url");
+}
+
 const loginOptionsSchema = z.object({ email: emailSchema });
 
 authRouter.post("/login/options", loginOptionsLimit, async (req, res) => {
@@ -395,15 +400,21 @@ authRouter.post("/login/options", loginOptionsLimit, async (req, res) => {
 
   const user = await prisma.user.findUnique({ where: { email }, include: { credentials: true } });
   const passkeys = user?.credentials.filter((c) => c.type === "PASSKEY" && c.credentialId) ?? [];
-  if (!user || passkeys.length === 0) {
-    res.status(404).json({ error: "No passkeys registered for this account" });
-    return;
-  }
+
+  // An unknown email and a known account without a passkey must be
+  // indistinguishable from a real one, so this endpoint cannot be used to
+  // discover which addresses have accounts. They get options naming a
+  // decoy credential that is stable per email (so repeated requests agree);
+  // no authenticator holds it, so the ceremony simply fails at verify with the
+  // same generic message as any other failure.
+  const allowCredentials =
+    user && passkeys.length > 0 ? passkeys.map((c) => ({ id: c.credentialId! })) : [{ id: decoyCredentialId(email) }];
 
   const options = await generateAuthenticationOptions({
     rpID: env.rpId,
-    userVerification: "preferred",
-    allowCredentials: passkeys.map((c) => ({ id: c.credentialId! })),
+    // Matches what /login/verify enforces (userVerification is required there).
+    userVerification: "required",
+    allowCredentials,
   });
 
   setChallenge(`login:${email}`, options.challenge);
@@ -437,7 +448,9 @@ authRouter.post("/login/verify", loginAttemptLimit, async (req, res) => {
 
   const result = await verifyPasskeyAssertion({ credentials: user.credentials, response, expectedChallenge });
   if (!result.ok) {
-    res.status(400).json({ error: result.error === "UNKNOWN_CREDENTIAL" ? "Unknown credential" : "Login verification failed" });
+    // One message for every failure, so the response never reveals whether the
+    // credential, the account or the signature was the problem.
+    res.status(400).json({ error: "Login verification failed" });
     return;
   }
 

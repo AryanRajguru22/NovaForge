@@ -99,14 +99,9 @@ app.get("/api/.well-known/openid-configuration", serveDiscovery);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientDistPath = process.env.CLIENT_DIST_PATH ?? path.join(__dirname, "../client-dist");
 const clientDistExists = fs.existsSync(clientDistPath);
-console.log(`[static] __dirname=${__dirname} clientDistPath=${clientDistPath} exists=${clientDistExists}`);
-if (!clientDistExists) {
-  try {
-    console.log(`[static] contents of ${path.dirname(clientDistPath)}:`, fs.readdirSync(path.dirname(clientDistPath)));
-  } catch (err) {
-    console.log(`[static] could not list ${path.dirname(clientDistPath)}:`, err);
-  }
-}
+// Filesystem paths are deliberately not logged (they are noise in production
+// and reveal the image layout); only whether the SPA is served from here.
+if (clientDistExists) console.log("[static] serving the client build from this process");
 
 const apiRouter = express.Router();
 apiRouter.use("/auth", authRouter);
