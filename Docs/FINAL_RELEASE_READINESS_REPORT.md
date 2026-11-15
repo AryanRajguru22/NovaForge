@@ -61,7 +61,7 @@ separately exercised beyond what the suites cover.
 
 Docker Desktop's engine did not start (backend process reports running, engine pipe never appears, the
 `docker-desktop` WSL distro stays stopped, a clean `docker desktop stop` times out; C: is nearly full).
-`docker compose config` validates the file syntax only. **Nothing below was run:** image builds, container
+`docker compose config` validates the file syntax only. The three images did build in GitHub Actions (section 7). **Never run anywhere:** container
 start, in-container migrations, health and readiness through the stack, in-container first-admin
 bootstrap, graceful shutdown on `docker stop`, persistence across container restart.
 
@@ -87,9 +87,7 @@ request test. Same-site (sibling subdomain) attackers are out of scope of that d
 
 ## 7. CI
 
-`.github/workflows/ci.yml` is written (PostgreSQL 16 service, migrate and drift check, typecheck, build,
-server tests, audit gate, client lint/test/build, docker builds). It has **not** executed on GitHub
-Actions at the time of writing. Do not treat it as passing until the first run is seen.
+`.github/workflows/ci.yml` ran on GitHub Actions for commit `79dbaf3` (run #1, event: push) and **succeeded**: server job (PostgreSQL 16 service, prisma validate, migrations on an empty database, no-drift check, typecheck, build, tests), client job, and the Docker images job (server, client and combined image **builds**). This is the first hosted run; one run is not a track record. The image jobs only prove the images build, not that the containers start or run the stack correctly.
 
 ## 8. Known limitations and their gating
 
